@@ -61,7 +61,7 @@ const FREE_SERVICE_NOTICE = '❌ این سرویس کاملاً رایگان ا�
 
 const REMOTE_MANIFEST_DATA_URL = "https://raw.githubusercontent.com/farzadqavidel/nexa-panel/refs/heads/main/resources/data.json";
 const REMOTE_MANIFEST_ANNOUNCE_URL = "https://raw.githubusercontent.com/farzadqavidel/nexa-panel/refs/heads/main/resources/notice.json";
-const REMOTE_UPDATE_SCRIPT_URL = "https://api.irnexa.workers.dev/script";
+const REMOTE_UPDATE_SCRIPT_URL = "https://raw.githubusercontent.com/farzadqavidel/nexa-panel/refs/heads/main/nexa.js";
 const REMOTE_CLEAN_IPS_URL = "https://raw.githubusercontent.com/farzadqavidel/nexa-panel/refs/heads/main/resources/clean-ip.json";
 const CAMOUFLAGE_TARGET_URL = "https://www.irnexa.workers.dev";
 
