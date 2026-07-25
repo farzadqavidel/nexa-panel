@@ -65,7 +65,7 @@ const REMOTE_UPDATE_SCRIPT_URL = "https://raw.githubusercontent.com/farzadqavide
 const REMOTE_CLEAN_IPS_URL = "https://raw.githubusercontent.com/farzadqavidel/nexa-panel/refs/heads/main/resources/clean-ip.json";
 const CAMOUFLAGE_TARGET_URL = "https://wordpress.org";
 
-const PANEL_VERSION = "2.3.4";
+const PANEL_VERSION = "2.3.8";
 const CLEAN_IPS_CACHE_TTL_MS_MS = 60 * 60 * 1000;
 const MANIFEST_CACHE_TTL_MS = 5 * 60 * 1000;
 const MANIFEST_FETCH_TIMEOUT_MS = 8000;
@@ -1364,10 +1364,6 @@ const Router = {
   async handleSetupPage(request, env) {
     const pageUrl = new URL(request.url);
     const cfTokenMode = pageUrl.searchParams.get('cf_token') === '1';
-    const setupReady = await SetupService.isReady(env);
-    if (setupReady && !cfTokenMode) {
-      return Response.redirect(new URL('/admin', pageUrl.origin).href, 302);
-    }
     const status = await SetupService.getStatus(env, request);
     return new Response(buildSetupHtml(status, { cfTokenMode }), {
       headers: { "Content-Type": "text/html; charset=utf-8" }
@@ -7856,7 +7852,7 @@ function buildSetupHtml(status, options) {
         ${passwordForm}
         ${cfTokenForm}
         ${missingVarsMsg}
-        <div class="mt-6 pt-4 border-t setup-divider">
+        <div class="mt-6 pt-4 border-t setup-divider" id="setup-enter-wrap">
         ${panelEntryBlock}
         </div>
     </div>
@@ -7977,6 +7973,10 @@ function buildSetupHtml(status, options) {
                         return;
                     }
                     showSetupToast(setupT('pwd_success'), 'success');
+                    var enterWrap = document.getElementById('setup-enter-wrap');
+                    if (enterWrap) {
+                        enterWrap.innerHTML = '<a href="/admin" class="setup-enter-btn block w-full py-3 font-bold rounded-xl text-sm transition text-center" data-i18n="enter_panel">' + setupT('enter_panel') + '</a>';
+                    }
                     setTimeout(function() { window.location.href = '/admin'; }, 1500);
                 } catch (err) {
                     showSetupToast(setupT('server_error'), 'error');
@@ -8964,7 +8964,7 @@ Commercial support is available at
                     <span class="adm-cdn-panel-title" data-i18n="cdn_finder_title">یافتن پروکسی</span>
                     <button type="button" class="adm-ip-scanner-action" onclick="loadCdnProxyPublicList()" id="cdn-proxy-list-btn" data-i18n="cdn_finder_load">دریافت فهرست</button>
                 </div>
-                <p class="adm-ip-scanner-sub" style="margin-bottom:0.75rem" data-i18n="cdn_finder_desc">فهرست‌های عمومی (PROXYIP از IRnova/Tools یا SOCKS5/HTTP/HTTPS از proxifly) را دریافت و بر اساس کشور انتخاب کنید. کیفیت پروکسی‌های عمومی متفاوت است؛ فهرست PROXYIP حدود ۱۰ مگابایت است.</p>
+                <p class="adm-ip-scanner-sub" style="margin-bottom:0.75rem" data-i18n="cdn_finder_desc">شما میتوانید با لود فهرست ها از پروکسی 68 کشور استفاده کنید. </p>
                 <div class="adm-cdn-fields two-col">
                     <div class="adm-cdn-field">
                         <label for="cdn-proxy-country" data-i18n="cdn_country_label">کشور</label>
@@ -10281,7 +10281,7 @@ Commercial support is available at
           cdn_save:'ذخیره',
           cdn_finder_title:'یافتن پروکسی',
           cdn_finder_load:'دریافت فهرست',
-          cdn_finder_desc:'فهرست‌های عمومی (PROXYIP از IRnova/Tools یا SOCKS5/HTTP/HTTPS از proxifly) را دریافت و بر اساس کشور انتخاب کنید. کیفیت پروکسی‌های عمومی متفاوت است؛ فهرست PROXYIP حدود ۱۰ مگابایت است.',
+          cdn_finder_desc:'شما میتوانید با لود فهرست ها از پروکسی 68 کشور استفاده کنید. ',
           cdn_country_label:'کشور',
           cdn_pick_label:'پروکسی',
           cdn_use_selected:'استفاده از انتخاب',
@@ -10804,7 +10804,7 @@ Commercial support is available at
           cdn_save:'Save',
           cdn_finder_title:'Find proxies',
           cdn_finder_load:'Load list',
-          cdn_finder_desc:'Fetch public lists (PROXYIP from IRNova/Tools or SOCKS5/HTTP/HTTPS from proxifly), pick by country. PROXYIP list is ~10MB.',
+          cdn_finder_desc:'You can use proxies from 68 countries by loading lists.',
           cdn_country_label:'Country',
           cdn_pick_label:'Proxy',
           cdn_use_selected:'Use selected',
