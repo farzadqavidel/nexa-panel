@@ -497,6 +497,7 @@ const WORKER_CONFIG_DEFAULTS = {
   statusPagePath: 'servicestat',
   subPagePath: 'sub',
   logsPagePath: 'logs',
+  adminPagePath: 'admin',
   ssEncryption: 'aes-128-gcm',
   infoRemarkTemplate: '[مصرف شده: {used}] [{total} : کل ] [مانده : {dayremind}]',
   nodeRemarkTemplate: '{username}'
@@ -712,6 +713,7 @@ const WorkerConfigService = {
     const statusPagePath = this.cleanPathSegment(src.statusPagePath) || d.statusPagePath;
     const subPagePath = this.cleanPathSegment(src.subPagePath) || d.subPagePath;
     const logsPagePath = this.cleanPathSegment(src.logsPagePath) || d.logsPagePath;
+    const adminPagePath = this.cleanPathSegment(src.adminPagePath) || d.adminPagePath;
     let transportPath = pickStr('transportPath', 120);
     if (!transportPath.startsWith('/')) transportPath = '/' + transportPath;
     return {
@@ -735,6 +737,7 @@ const WorkerConfigService = {
       statusPagePath,
       subPagePath,
       logsPagePath,
+      adminPagePath,
       ssEncryption: pickStr('ssEncryption', 32) || d.ssEncryption,
       infoRemarkTemplate: pickStr('infoRemarkTemplate', 300) || d.infoRemarkTemplate,
       nodeRemarkTemplate: pickStr('nodeRemarkTemplate', 120) || d.nodeRemarkTemplate
@@ -762,9 +765,9 @@ const WorkerConfigService = {
     const cfg = await this.loadSettings(env);
     return cfg.subPagePath || WORKER_CONFIG_DEFAULTS.subPagePath;
   },
-  async getLogsPath(env) {
+  async getAdminPath(env) {
     const cfg = await this.loadSettings(env);
-    return cfg.logsPagePath || WORKER_CONFIG_DEFAULTS.logsPagePath;
+    return cfg.adminPagePath || WORKER_CONFIG_DEFAULTS.adminPagePath;
   },
   async getTransportPath(env) {
     const cfg = await this.loadSettings(env);
@@ -1255,10 +1258,11 @@ export default {
     if (url.pathname === '/setup') {
       return await Router.handleSetupPage(request, env);
     }
+    const adminPath = workerCfg.adminPagePath || WORKER_CONFIG_DEFAULTS.adminPagePath;
     if (url.pathname === '/login') {
-      return Response.redirect(new URL('/admin', url.origin).href, 302);
+      return Response.redirect(new URL('/' + adminPath, url.origin).href, 302);
     }
-    if (url.pathname === '/admin') {
+    if (url.pathname === '/' + adminPath) {
       return await Router.handlePanel(request, env);
     }
     const statusPath = workerCfg.statusPagePath || WORKER_CONFIG_DEFAULTS.statusPagePath;
@@ -1380,7 +1384,8 @@ const Router = {
         headers: { "Content-Type": "text/html; charset=utf-8" }
       });
     }
-    return Response.redirect(new URL('/admin#logs', new URL(request.url).origin).href, 302);
+    const adminPath = await WorkerConfigService.getAdminPath(env);
+    return Response.redirect(new URL('/' + adminPath + '#logs', new URL(request.url).origin).href, 302);
   },
   async handleUserLogsPage(request, url, env, logsPath) {
     const setupReady = await SetupService.isReady(env);
@@ -2033,11 +2038,16 @@ const Router = {
       }
       if (request.method === 'POST') {
         const body = await request.json();
+        const newAdminPath = WorkerConfigService.cleanPathSegment(body.adminPagePath) || WORKER_CONFIG_DEFAULTS.adminPagePath;
         const newStatusPath = WorkerConfigService.cleanPathSegment(body.statusPagePath) || WORKER_CONFIG_DEFAULTS.statusPagePath;
         const newSubPath = WorkerConfigService.cleanPathSegment(body.subPagePath) || WORKER_CONFIG_DEFAULTS.subPagePath;
         const newLogsPath = WorkerConfigService.cleanPathSegment(body.logsPagePath) || WORKER_CONFIG_DEFAULTS.logsPagePath;
-        if (newStatusPath === newSubPath || newStatusPath === newLogsPath || newSubPath === newLogsPath) {
-          return new Response(JSON.stringify({ error: "آدرس صفحه وضعیت، ساب و لاگ‌ها باید با هم متفاوت باشند" }), {
+        const reservedPaths = ['api', 'setup', 'login', 'guide', 'locations', 'my-ip'];
+        const allPaths = [newAdminPath, newStatusPath, newSubPath, newLogsPath];
+        const hasDuplicate = new Set(allPaths).size !== allPaths.length;
+        const hasReserved = allPaths.some(p => reservedPaths.includes(p));
+        if (hasDuplicate || hasReserved) {
+          return new Response(JSON.stringify({ error: "آدرس پنل مدیریت، صفحه وضعیت، ساب و لاگ‌ها باید با هم و با مسیرهای رزرو شده (api, setup, login, guide) متفاوت باشند" }), {
             status: 400, headers: { "Content-Type": "application/json; charset=utf-8" }
           });
         }
@@ -9068,9 +9078,14 @@ Commercial support is available at
             <label class="block text-sm font-medium mb-1.5" style="color: var(--admin-muted)" data-i18n="wc_transport_path_label">مسیر انتقال</label>
             <input type="text" id="wc-transport-path" dir="ltr" class="admin-input w-full px-3 py-2.5 text-sm font-mono">
         </div>
-        <div class="grid sm:grid-cols-3 gap-3 pt-2 border-t" style="border-color: var(--admin-border)">
+        <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-2 border-t" style="border-color: var(--admin-border)">
             <div>
-                <label class="block text-sm font-medium mb-1.5" style="color: var(--admin-muted)" data-i18n="wc_status_path_label">آدرس صفحه وضعیت</label>
+                <label class="block text-sm font-medium mb-1.5" style="color: var(--admin-muted)" data-i18n="wc_admin_page_path_label">آدرس پنل مدیریت</label>
+                <input type="text" id="wc-admin-page-path" dir="ltr" class="admin-input w-full px-3 py-2.5 text-sm font-mono">
+                <p class="text-xs mt-1.5" style="color: var(--admin-muted)" data-i18n="wc_path_empty_hint">خالی = پیش‌فرض</p>
+            </div>
+            <div>
+                <label class="block text-sm font-medium mb-1.5" style="color: var(--admin-muted)" data-i18n="wc_status_page_path_label">آدرس صفحه وضعیت</label>
                 <input type="text" id="wc-status-page-path" dir="ltr" class="admin-input w-full px-3 py-2.5 text-sm font-mono">
                 <p class="text-xs mt-1.5" style="color: var(--admin-muted)" data-i18n="wc_path_empty_hint">خالی = پیش‌فرض</p>
             </div>
@@ -9085,6 +9100,7 @@ Commercial support is available at
                 <p class="text-xs mt-1.5" style="color: var(--admin-muted)" data-i18n="wc_logs_page_path_hint">مثال : /logs/(نام سرویس)</p>
             </div>
         </div>
+        <div id="wc-admin-path-changed-banner" class="hidden text-xs rounded-xl px-3 py-2.5 font-bold" style="background: color-mix(in srgb, #f59e0b 12%, transparent); color: #b45309;"></div>
     </div>
 
     <div class="admin-card p-6 space-y-4">
@@ -10686,6 +10702,7 @@ Commercial support is available at
           wc_sub_desc:'نام اشتراک، آدرس تبدیل‌گر و صفحه وضعیت کاربر',
           wc_sub_name_label:'نام اشتراک',
           wc_sub_update_label:'بازه به‌روزرسانی (ساعت)',
+          wc_admin_page_path_label:'آدرس پنل مدیریت',
           wc_status_path_label:'آدرس صفحه وضعیت',
           wc_status_path_hint:'مثلاً servicestat یا status — لینک نهایی: /آدرس/نام‌کاربر',
           wc_sub_converter_label:'API تبدیل اشتراک',
@@ -11209,6 +11226,7 @@ Commercial support is available at
           wc_sub_desc:'Subscription name, converter API and user status page',
           wc_sub_name_label:'Subscription name',
           wc_sub_update_label:'Update interval (hours)',
+          wc_admin_page_path_label:'Admin panel path',
           wc_status_path_label:'Status page path',
           wc_status_path_hint:'e.g. servicestat or status — final URL: /path/username',
           wc_sub_converter_label:'Subscription converter API',
@@ -13217,6 +13235,7 @@ function closeUsageWarning() {
                 setWorkerConfigField('wc-central-api', cfg.centralApi, defs.centralApi);
                 setWorkerConfigField('wc-sub-name', cfg.subName, defs.subName);
                 setWorkerConfigField('wc-sub-update-hours', cfg.subUpdateHours, defs.subUpdateHours);
+                setWorkerConfigField('wc-admin-page-path', cfg.adminPagePath, defs.adminPagePath);
                 setWorkerConfigField('wc-status-page-path', cfg.statusPagePath, defs.statusPagePath);
                 setWorkerConfigField('wc-sub-page-path', cfg.subPagePath, defs.subPagePath);
                 setWorkerConfigField('wc-logs-page-path', cfg.logsPagePath, defs.logsPagePath);
@@ -13247,6 +13266,7 @@ function closeUsageWarning() {
                     centralApi: getWorkerFieldValue('wc-central-api', 'centralApi'),
                     subName: getWorkerFieldValue('wc-sub-name', 'subName'),
                     subUpdateHours: Number(getWorkerFieldValue('wc-sub-update-hours', 'subUpdateHours')) || (workerConfigDefaults && workerConfigDefaults.subUpdateHours) || 3,
+                    adminPagePath: getWorkerFieldValue('wc-admin-page-path', 'adminPagePath'),
                     statusPagePath: getWorkerFieldValue('wc-status-page-path', 'statusPagePath'),
                     subPagePath: getWorkerFieldValue('wc-sub-page-path', 'subPagePath'),
                     logsPagePath: getWorkerFieldValue('wc-logs-page-path', 'logsPagePath'),
@@ -13269,6 +13289,19 @@ function closeUsageWarning() {
                     window.panelWorkerConfig = data.settings || payload;
                     showNexaToast(lang === 'en' ? 'Worker settings saved' : 'تنظیمات ورکر ذخیره شد');
                     await loadWorkerConfigForm();
+                    const newAdminPath = (data.settings && data.settings.adminPagePath) || 'admin';
+                    const currentPathSeg = location.pathname.split('/').filter(Boolean).join('/');
+                    const banner = document.getElementById('wc-admin-path-changed-banner');
+                    if (banner && newAdminPath && newAdminPath !== currentPathSeg) {
+                        const newUrl = location.origin + '/' + newAdminPath;
+                        banner.classList.remove('hidden');
+                        banner.textContent = (lang === 'en'
+                            ? 'Admin panel address changed. New address: '
+                            : 'آدرس پنل مدیریت تغییر کرد. آدرس جدید: ') + newUrl;
+                        setTimeout(function() { window.location.href = newUrl; }, 2500);
+                    } else if (banner) {
+                        banner.classList.add('hidden');
+                    }
                 } else {
                     showNexaToast(data.error || (lang === 'en' ? 'Failed to save' : 'خطا در ذخیره'), 'error');
                 }
