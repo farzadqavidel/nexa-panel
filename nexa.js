@@ -8538,6 +8538,9 @@ Commercial support is available at
                     <div class="adm-page-title" id="adm-page-title">داشبورد</div>
                     <div class="adm-page-desc" id="adm-page-desc">آمار کلی پنل و وضعیت سرویس‌ها</div>
                 </div>
+                <button type="button" onclick="openSectionHelp()" class="adm-theme-btn" title="آموزش این بخش" style="color:#f59e0b">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                </button>
             </div>
             <div class="adm-topbar-actions">
                 <div class="adm-lang-switch">
@@ -9584,6 +9587,14 @@ Commercial support is available at
         </div>
     </div>
 </div>
+    <div id="section-help-modal" class="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm opacity-0 pointer-events-none transition-all duration-300 ease-out" onclick="if(event.target===this)closeSectionHelp()">
+        <div id="section-help-modal-card" class="w-full max-w-sm admin-card shadow-xl overflow-hidden p-6 text-center transition-all transform duration-300 opacity-0 scale-95 ease-out">
+            <h3 id="section-help-title" class="font-bold mb-3 text-lg" style="color: var(--admin-text)">آموزش این بخش</h3>
+            <p class="text-sm mb-5" style="color: var(--admin-muted)">برای آموزش این قسمت روی دکمه زیر کلیک کنید</p>
+            <a id="section-help-link" href="#" target="_blank" rel="noopener noreferrer" class="admin-btn-primary block w-full py-2.5 text-sm font-bold">مشاهده آموزش</a>
+            <button type="button" onclick="closeSectionHelp()" class="w-full py-2 mt-3 rounded-xl font-medium text-sm" style="background: var(--admin-input-bg); color: var(--admin-text)">بستن</button>
+        </div>
+    </div>
     <div id="qr-modal" class="fixed inset-0 z-[85] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm opacity-0 pointer-events-none transition-all duration-300 ease-out" onclick="if(event.target===this)window.toggleQRModal(false)">
         <div id="qr-modal-card" class="w-full max-w-sm bg-white dark:bg-amoled-card border border-gray-200 dark:border-amoled-border rounded-2xl shadow-xl overflow-hidden p-6 text-center transition-all transform duration-300 opacity-0 scale-95 ease-out">
             <h3 id="qr-modal-title" class="font-bold text-gray-900 dark:text-zinc-100 mb-4">اسکن کد QR</h3>
@@ -11317,14 +11328,48 @@ Commercial support is available at
                 if (panel) panel.innerHTML = buildGuidePanelHtml(platform, dict);
             });
         }
+        const SECTION_HELP_LINKS = {
+            dashboard: 'https://farzadqavidel.github.io/nexa-panel/#guide-dashboard',
+            users: 'https://farzadqavidel.github.io/nexa-panel/#guide-users',
+            'node-server': 'https://farzadqavidel.github.io/nexa-panel/#guide-node',
+            'ip-scanner': 'https://farzadqavidel.github.io/nexa-panel/#guide-ipscan',
+            'cdn-proxy': 'https://farzadqavidel.github.io/nexa-panel/#guide-cdn',
+            logs: 'https://farzadqavidel.github.io/nexa-panel/#guide-logs',
+            settings: 'https://farzadqavidel.github.io/nexa-panel/#guide-settings',
+        };
+        function openSectionHelp() {
+            const activeNav = document.querySelector('.adm-nav-item.active[data-section]');
+            const section = activeNav ? activeNav.dataset.section : 'dashboard';
+            const link = SECTION_HELP_LINKS[section] || '#';
+            const meta = ADMIN_SECTIONS[section];
+            const lang = localStorage.getItem('nexa-admin-lang') || 'fa';
+            const titleEl = document.getElementById('section-help-title');
+            const linkEl = document.getElementById('section-help-link');
+            if (titleEl && meta) titleEl.textContent = 'آموزش ' + (meta.title[lang] || meta.title.fa);
+            if (linkEl) linkEl.href = link;
+            const modal = document.getElementById('section-help-modal');
+            const card = document.getElementById('section-help-modal-card');
+            modal.classList.remove('opacity-0', 'pointer-events-none');
+            modal.classList.add('opacity-100', 'pointer-events-auto');
+            card.classList.remove('opacity-0', 'scale-95');
+            card.classList.add('opacity-100', 'scale-100');
+        }
+        function closeSectionHelp() {
+            const modal = document.getElementById('section-help-modal');
+            const card = document.getElementById('section-help-modal-card');
+            modal.classList.remove('opacity-100', 'pointer-events-auto');
+            modal.classList.add('opacity-0', 'pointer-events-none');
+            card.classList.remove('opacity-100', 'scale-100');
+            card.classList.add('opacity-0', 'scale-95');
+        }
         const ADMIN_SECTIONS = {
-            dashboard: { title: { fa: 'داشبورد', en: 'Dashboard' }, desc: { fa: 'لینک اتصال به سرویس , ریکوئست ها , مشخصات ایپی شما', en: 'Your location, Worker usage and main subscription' } },
+            dashboard: { title: { fa: 'داشبورد', en: 'Dashboard' }, desc: { fa: 'نمای کلی پنل', en: 'Panel overview' } },
             users: { title: { fa: 'مدیریت کاربران', en: 'User Management' }, desc: { fa: 'مدیریت کاربران , وضعیت کاربران', en: 'Manage, edit and bulk actions on users' } },
             guide: { title: { fa: 'آموزش اتصال', en: 'Connection Guide' }, desc: { fa: 'راهنمای اتصال برای اندروید، iOS و دسکتاپ', en: 'Connection guide for Android, iOS and desktop' } },
-            'node-server': { title: { fa: 'سرور نود', en: 'Node Server' }, desc: { fa: 'کانفیگ‌های TLS نود اصلی روی پورت‌های کلودفلر', en: 'Main node TLS configs on Cloudflare ports' } },
+            'node-server': { title: { fa: 'سرور نود', en: 'Node Server' }, desc: { fa: 'سرور های نود اصلی', en: 'Main node Server' } },
             'ip-scanner': { title: { fa: 'اسکنر IP تمیز', en: 'Clean IP Scanner' }, desc: { fa: 'اسکن IP تمیز و مدیریت مخزن آی‌پی', en: 'Clean IP scan and pool management' } },
             'cdn-proxy': { title: { fa: 'پروکسی CDN', en: 'CDN Proxy' }, desc: { fa: 'تنظیمات پروکسی CDN کلودفلر', en: 'Cloudflare CDN proxy settings' } },
-            logs: { title: { fa: 'لاگ فعالیت', en: 'Activity Log' }, desc: { fa: 'مشاهده رویدادها و دریافت اعلان در تلگرام', en: 'View events and receive Telegram notifications' } },
+            logs: { title: { fa: 'لاگ فعالیت', en: 'Activity Log' }, desc: { fa: 'مشاهده لاگ ها', en: 'View Logs' } },
             settings: { title: { fa: 'تنظیمات پنل', en: 'Panel Settings' }, desc: { fa: 'تنظیمات ورکر، پروتکل، اشتراک و بکاپ', en: 'Worker, protocol, subscription and backup settings' } },
             about: { title: { fa: 'درباره ما', en: 'About Us' }, desc: { fa: 'معرفی تیم NEXA و ماموریت پنل', en: 'NEXA team intro and panel mission' } }
         };
@@ -11395,6 +11440,8 @@ Commercial support is available at
             if (mapZoomBtn) mapZoomBtn.textContent = adminT('dash_zoom_map');
         }
         function switchAdminSection(name) {
+            const helpBtn = document.querySelector('.adm-topbar-start .adm-theme-btn[title="آموزش این بخش"]');
+            if (helpBtn) helpBtn.style.display = (name === 'about' || name === 'guide') ? 'none' : '';
             document.querySelectorAll('.adm-section').forEach(function(el) {
                 el.classList.toggle('active', el.id === 'section-' + name);
             });
