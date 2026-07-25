@@ -18,6 +18,7 @@
   <a href="https://t.me/irnexa"><img src="https://img.shields.io/badge/📣_تلگرام-t.me%2Firnexa-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram"></a>
   <a href="https://www.youtube.com/@IR_NEXA"><img src="https://img.shields.io/badge/🎬_یوتیوب-@IR__NEXA-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube"></a>
 </p>
+
 🇮🇷 **فارسی** &nbsp;|&nbsp; 🇬🇧 [Read in English](README.md)
 
 </div>
