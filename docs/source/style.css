@@ -51,9 +51,9 @@
 
   /* ===== Header / top navigation ===== */
   .topbar{
-    position: sticky; top:0; z-index:100;
-    background: var(--surface); border-bottom:1px solid var(--border);
-    flex-shrink:0;
+  position: sticky; top:0; z-index:250;
+  background: var(--surface); border-bottom:1px solid var(--border);
+  flex-shrink:0;
   }
   .topbar-inner{
     max-width:1500px; margin:0 auto;
@@ -70,6 +70,7 @@
   .brand-text .tag{font-size:10.5px; color:var(--muted); font-family:var(--font-mono); direction:ltr; text-align:start;}
 
   .topnav{ display:flex; align-items:center; gap:2px; flex:1; min-width:0; }
+  .drawer-head{ display:none; }
   .nav-group{ position:relative; }
   .nav-group-btn{
     display:flex; align-items:center; gap:6px; padding:9px 12px; border-radius:8px;
@@ -135,20 +136,56 @@
   .lang-btn{ width:auto; padding:0 10px; font-family:var(--font-mono); font-weight:700; font-size:11.5px; letter-spacing:.03em; }
   .hamburger-btn{ display:none; }
 
+  /* ===== Mobile drawer overlay ===== */
+  .menu-backdrop{
+    position:fixed; inset:0; background:rgba(4,6,10,.6);
+    backdrop-filter:blur(3px); opacity:0; pointer-events:none;
+    transition:opacity .25s ease; z-index:150;
+  }
+  body.menu-open .menu-backdrop{ opacity:1; pointer-events:auto; }
+
   @media (max-width:880px){
     .topnav{
-      display:none; flex-direction:column; align-items:stretch; gap:0;
-      flex: 1 1 100%; min-width:100%; width:100%; order:5; margin-top:6px; padding-top:6px; border-top:1px solid var(--border);
-      max-height: calc(100vh - 130px); overflow-y:auto;
+      position:fixed; top:0; right:0; height:100dvh;
+      width:min(310px, 84vw); max-height:none;
+      background:var(--surface); border-inline-start:1px solid var(--border);
+      display:flex; flex-direction:column; gap:0; margin:0; padding:0;
+      overflow-y:auto; z-index:200;
+      transform:translateX(100%);
+      transition:transform .3s cubic-bezier(.32,.72,0,1);
+      box-shadow:-14px 0 40px rgba(0,0,0,.35);
     }
-    body.menu-open .topnav{ display:flex; }
-    .nav-group{ width:100%; }
-    .nav-group-btn{ width:100%; justify-content:space-between; padding:12px 6px; font-size:14.5px; border-radius:0; border-bottom:1px solid var(--border); }
+    html[dir="ltr"] .topnav{ transform:translateX(-100%); }
+    html[dir="ltr"] .topnav{ right:auto; left:0; }
+    body.menu-open .topnav{ transform:translateX(0); }
+
+    .drawer-head{
+      display:flex; align-items:center; justify-content:space-between;
+      padding:18px 18px; border-bottom:1px solid var(--border); flex-shrink:0;
+      position:sticky; top:0; background:var(--surface); z-index:2;
+    }
+    .drawer-head .dh-title{ font-weight:800; font-size:15px; }
+    .drawer-close{
+      width:34px; height:34px; border-radius:9px; border:1px solid var(--border);
+      background:var(--surface-2); color:var(--muted);
+      display:flex; align-items:center; justify-content:center; cursor:pointer;
+      transition:border-color .15s ease, color .15s ease;
+    }
+    .drawer-close:hover{ border-color:var(--accent); color:var(--accent); }
+    .drawer-close svg{ width:15px; height:15px; }
+
+    .nav-group{ width:100%; border-bottom:1px solid var(--border); }
+    .nav-group-btn{
+      width:100%; justify-content:space-between; padding:16px 18px;
+      font-size:14.5px; border-radius:0;
+    }
     .nav-dropdown{
-      position:static; box-shadow:none; border:none; background:none; padding:2px 4px 8px 22px; display:none;
+      position:static; box-shadow:none; border:none;
+      background:var(--surface-2); padding:4px 12px 12px 30px; display:none;
     }
     .nav-group.open .nav-dropdown{ display:flex; }
-    .nav-dropdown a{ padding:10px 8px; font-size:13.6px; }
+    .nav-dropdown a{ padding:11px 10px; font-size:13.8px; border-radius:8px; }
+
     .search-box{ width:150px; }
     .hamburger-btn{ display:flex; }
   }
@@ -390,3 +427,67 @@
 .feature-pair-body p{ color:var(--muted); font-size:14px; max-width:75ch; }
 .feature-pair-body p + p{ margin-top:10px; }
 .feature-pair-body a.inline-link{ color:var(--accent-2); text-decoration:underline; }
+.guide-note{
+  margin-top: 22px;
+  padding: 18px 20px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent-2) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-2) 25%, transparent);
+  border-right: 3px solid var(--accent-2);
+}
+.guide-note .gn-label{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  font-weight:700;
+  font-size:13.5px;
+  color: var(--accent-2);
+  margin-bottom: 10px;
+}
+.guide-note p{
+  font-size: 14px;
+  line-height: 1.9;
+  color: var(--text);
+  margin: 8px 0;
+}
+.guide-note .gn-warn{
+  background: color-mix(in srgb, var(--accent-2) 10%, transparent);
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+.guide-note strong{
+  color: var(--accent-2);
+}
+/* ===== Image protection ===== */
+  .frame-card img,
+  .guide-shot img,
+  .feature-block .fb-shot img,
+  .feature-pair .fp-shot img{
+    cursor: zoom-in;
+    -webkit-user-drag: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  /* ===== Lightbox ===== */
+  .lightbox{
+    position:fixed; inset:0; z-index:300;
+    background:rgba(4,6,10,.94); backdrop-filter:blur(5px);
+    display:none; align-items:center; justify-content:center; padding:30px;
+  }
+  .lightbox.show{ display:flex; }
+  .lightbox img{
+    max-width:min(1300px,92vw); max-height:88vh;
+    border-radius:14px; box-shadow:0 24px 70px rgba(0,0,0,.5);
+    -webkit-user-drag:none; user-select:none; -webkit-touch-callout:none;
+    animation: lbIn .22s ease;
+  }
+  @keyframes lbIn{ from{opacity:0; transform:scale(.96);} to{opacity:1; transform:none;} }
+  .lightbox-close{
+    position:fixed; top:22px; inset-inline-end:26px; z-index:301;
+    width:42px; height:42px; border-radius:50%;
+    background:var(--surface); border:1px solid var(--border); color:var(--text);
+    display:flex; align-items:center; justify-content:center; cursor:pointer;
+  }
+  .lightbox-close:hover{ border-color:var(--accent); color:var(--accent); }
+  body.lightbox-open{ overflow:hidden; }
