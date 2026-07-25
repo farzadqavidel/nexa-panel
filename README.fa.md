@@ -8,8 +8,16 @@
 [![Platform](https://img.shields.io/badge/Platform-Cloudflare%20Workers-f38020.svg)](https://workers.cloudflare.com/)
 [![Database](https://img.shields.io/badge/Database-Cloudflare%20D1-orange.svg)](https://developers.cloudflare.com/d1/)
 
-[🌐 دمو / سایت](https://www.irnexa.workers.dev/) • [📣 کانال تلگرام](https://t.me/irnexa) • [🎬 یوتیوب](https://www.youtube.com/@IR_NEXA)
+## 🔗 لینک های کاربردی
 
+<p align="center">
+  <a href="https://www.irnexa.workers.dev/"><img src="https://img.shields.io/badge/🌐_وب‌سایت-irnexa.workers.dev-f38020?style=for-the-badge&logo=cloudflare&logoColor=white" alt="Website"></a>
+  <a href="https://deploy.irnexa.workers.dev"><img src="https://img.shields.io/badge/🧷_صفحه_نصب-deploy.irnexa.workers.dev-success?style=for-the-badge&logo=cloudflare&logoColor=white" alt="Deploy Page"></a>
+  <a href="https://farzadqavidel.github.io/nexa-panel/"><img src="https://img.shields.io/badge/📚_مستندات-farzadqavidel.github.io-8250df?style=for-the-badge&logo=gitbook&logoColor=white" alt="Documentation"></a>
+  <br><br>
+  <a href="https://t.me/irnexa"><img src="https://img.shields.io/badge/📣_تلگرام-t.me%2Firnexa-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram"></a>
+  <a href="https://www.youtube.com/@IR_NEXA"><img src="https://img.shields.io/badge/🎬_یوتیوب-@IR__NEXA-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube"></a>
+</p>
 🇮🇷 **فارسی** &nbsp;|&nbsp; 🇬🇧 [Read in English](README.md)
 
 </div>
@@ -42,6 +50,12 @@
 - 🌐 سیستم پروکسی آی‌پی برای دریافت آی‌پی ثابت (مناسب کارهای حساس مانند ترید و صرافی نیست)
 - 🧹 اسکنر آی‌پی تمیز
 
+## 📚 مستندات
+
+راهنمای کامل استفاده از تمام بخش‌های پنل، از نصب تا تنظیمات پیشرفته، در صفحه‌ی مستندات رسمی در دسترس است:
+
+### 👉 [مشاهده‌ی مستندات کامل پنل](https://farzadqavidel.github.io/nexa-panel/)
+
 ## 🚀 نصب سریع (روش ساده)
 
 فقط کافیست وارد صفحه‌ی ساخت پنل شوید و مراحل را دنبال کنید؛ پنل شما روی دامنه‌ی رایگان Cloudflare بالا می‌آید:
@@ -70,16 +84,6 @@
    ```
    30 20 * * *
    ```
-
-## 🔗 لینک‌های مفید
-
-<p align="center">
-  <a href="https://www.irnexa.workers.dev/"><img src="https://img.shields.io/badge/🌐_وب‌سایت-irnexa.workers.dev-f38020?style=for-the-badge&logo=cloudflare&logoColor=white" alt="Website"></a>
-  <a href="https://deploy.irnexa.workers.dev"><img src="https://img.shields.io/badge/🧷_صفحه_نصب-deploy.irnexa.workers.dev-success?style=for-the-badge&logo=cloudflare&logoColor=white" alt="Deploy Page"></a>
-  <br><br>
-  <a href="https://t.me/irnexa"><img src="https://img.shields.io/badge/📣_تلگرام-t.me%2Firnexa-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram"></a>
-  <a href="https://www.youtube.com/@IR_NEXA"><img src="https://img.shields.io/badge/🎬_یوتیوب-@IR__NEXA-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube"></a>
-</p>
 
 ## 💖 حمایت مالی
 

@@ -8,9 +8,18 @@
 [![Platform](https://img.shields.io/badge/Platform-Cloudflare%20Workers-f38020.svg)](https://workers.cloudflare.com/)
 [![Database](https://img.shields.io/badge/Database-Cloudflare%20D1-orange.svg)](https://developers.cloudflare.com/d1/)
 
-[🌐 Website / Demo](https://www.irnexa.workers.dev/) • [📣 Telegram](https://t.me/irnexa) • [🎬 YouTube](https://www.youtube.com/@IR_NEXA)
+## 🔗 Useful Links
 
-🇬🇧 **English** &nbsp;|&nbsp; 🇮🇷 [در فارسی بخوانید.](README.fa.md)
+<p align="center">
+  <a href="https://www.irnexa.workers.dev/"><img src="https://img.shields.io/badge/🌐_Website-irnexa.workers.dev-f38020?style=for-the-badge&logo=cloudflare&logoColor=white" alt="Website"></a>
+  <a href="https://deploy.irnexa.workers.dev"><img src="https://img.shields.io/badge/🧷_Deploy_Page-deploy.irnexa.workers.dev-success?style=for-the-badge&logo=cloudflare&logoColor=white" alt="Deploy Page"></a>
+  <a href="https://farzadqavidel.github.io/nexa-panel/"><img src="https://img.shields.io/badge/📚_Documentation-farzadqavidel.github.io-8250df?style=for-the-badge&logo=gitbook&logoColor=white" alt="Documentation"></a>
+  <br><br>
+  <a href="https://t.me/irnexa"><img src="https://img.shields.io/badge/📣_Telegram-t.me%2Firnexa-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram"></a>
+  <a href="https://www.youtube.com/@IR_NEXA"><img src="https://img.shields.io/badge/🎬_YouTube-@IR__NEXA-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube"></a>
+</p>
+
+🇬🇧 **English** &nbsp;|&nbsp; 🇮🇷 [در فارسی بخوانید](README.fa.md)
 
 </div>
 
@@ -42,6 +51,12 @@
 - 🌐 IP proxy system for a static IP (not suitable for sensitive use cases such as trading or exchanges)
 - 🧹 Clean IP scanner
 
+## 📚 Documentation
+
+A complete guide covering every section of the panel, from installation to advanced configuration, is available on the official documentation site:
+
+### 👉 [View the full panel documentation](https://farzadqavidel.github.io/nexa-panel/)
+
 ## 🚀 Quick Deploy
 
 Just open the deploy page and follow the steps — your panel will be live on Cloudflare's free domain:
@@ -71,16 +86,6 @@ If you prefer setting things up step by step with full control:
    30 20 * * *
    ```
 
-## 🔗 Useful Links
-
-<p align="center">
-  <a href="https://www.irnexa.workers.dev/"><img src="https://img.shields.io/badge/🌐_Website-irnexa.workers.dev-f38020?style=for-the-badge&logo=cloudflare&logoColor=white" alt="Website"></a>
-  <a href="https://deploy.irnexa.workers.dev"><img src="https://img.shields.io/badge/🧷_Deploy_Page-deploy.irnexa.workers.dev-success?style=for-the-badge&logo=cloudflare&logoColor=white" alt="Deploy Page"></a>
-  <br><br>
-  <a href="https://t.me/irnexa"><img src="https://img.shields.io/badge/📣_Telegram-t.me%2Firnexa-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram"></a>
-  <a href="https://www.youtube.com/@IR_NEXA"><img src="https://img.shields.io/badge/🎬_YouTube-@IR__NEXA-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube"></a>
-</p>
-
 ## 💖 Support the Project
 
 If this project has been useful to you, consider supporting it with a crypto donation 🙏
@@ -99,6 +104,6 @@ This project is released under the **MIT License**. See the [LICENSE](LICENSE) f
 
 <div align="center">
 
-Made by the **NEXA** team
+Made by **NEXA**
 
 </div>
