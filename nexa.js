@@ -65,7 +65,7 @@ const REMOTE_UPDATE_SCRIPT_URL = "https://raw.githubusercontent.com/farzadqavide
 const REMOTE_CLEAN_IPS_URL = "https://raw.githubusercontent.com/farzadqavidel/nexa-panel/refs/heads/main/resources/clean-ip.json";
 const CAMOUFLAGE_TARGET_URL = "https://wordpress.org";
 
-const PANEL_VERSION = "2.3.8";
+const PANEL_VERSION = "2.4.1";
 const CLEAN_IPS_CACHE_TTL_MS_MS = 60 * 60 * 1000;
 const MANIFEST_CACHE_TTL_MS = 5 * 60 * 1000;
 const MANIFEST_FETCH_TIMEOUT_MS = 8000;
