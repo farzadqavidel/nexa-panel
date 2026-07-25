@@ -63,6 +63,12 @@
     </div>
 
     <nav class="topnav" id="topNav">
+      <div class="drawer-head">
+        <span class="dh-title" data-i18n="drawerTitle">منو</span>
+        <button type="button" class="drawer-close" id="drawerCloseBtn" aria-label="Close menu">
+          <svg width="15" height="15"><use href="#icon-close"/></svg>
+        </button>
+      </div>
       <div class="nav-group" data-group="start">
         <button type="button" class="nav-group-btn" data-i18n="navStart">خانه<svg><use href="#icon-chevron"/></svg></button>
         <div class="nav-dropdown">
@@ -118,6 +124,7 @@
   </div>
 </header>
 
+<div class="menu-backdrop" id="menuBackdrop"></div>
 <div class="content-col">
   <main id="mainScroll">
 
@@ -133,7 +140,7 @@
       </div>
 
       <div class="stat-row">
-        <div class="stat"><b data-i18n="ovStat1n">۰</b><span data-i18n="ovStat1s">سرور اختصاصی لازم</span></div>
+        <div class="stat"><b data-i18n="ovStat1n">0</b><span data-i18n="ovStat1s">سرور اختصاصی لازم</span></div>
         <div class="stat"><b>MIT</b><span data-i18n="ovStat2s">لایسنس متن‌باز</span></div>
         <div class="stat"><b>Free</b><span data-i18n="ovStat3s">پلن رایگان Cloudflare</span></div>
         
@@ -374,11 +381,21 @@
       <div class="guide-crumb"><svg><use href="#icon-arrow"/></svg><span data-i18n="guideCrumb">راهنمای پنل</span></div>
       <div class="guide-title"><span class="gicon"><svg width="20" height="20"><use href="#icon-cloud"/></svg></span><h2 data-i18n="gCdnT">پروکسی CDN</h2></div>
       <p style="color:var(--muted)" data-i18n="gCdnSub">تنظیمات دسترسی CDN کلودفلر و PROXYIP.</p>
-      <div class="guide-shot"><div class="no-shot"><svg><use href="#icon-info"/></svg><span data-i18n="gCdnT2">تصویر این بخش هنوز اضافه نشده</span></div></div>
-      <div class="guide-desc">
-        <div class="gd-label"><svg width="13" height="13"><use href="#icon-info"/></svg><span data-i18n="guideDescLabel">توضیحات</span></div>
-        <p data-i18n="gCdnDesc"></p>
+      <div class="guide-shot">
+      <div class="bar"><span></span><span></span><span></span></div>
+      <img src="Images/proxy-ip.png" alt="Proxy IP list" data-i18n-alt="gCdnT">
+    </div>
+    
+    <div class="guide-note">
+      <div class="gn-label">
+        <svg width="14" height="14"><use href="#icon-globe"/></svg>
+        <span data-i18n="gCdnNoteLabel">راهنمای پروکسی IP</span>
       </div>
+      <p data-i18n="gCdnDesc1">در بخش پروکسی IP، با کلیک روی گزینه‌ی «دریافت لیست»، فهرستی شامل آی‌پی‌های مربوط به ۶۸ کشور مختلف در اختیار شما قرار می‌گیرد. سپس می‌توانید آی‌پی مورد نظر خود را از میان این لیست انتخاب کنید.</p>
+      <p class="gn-warn" data-i18n="gCdnDesc2"><strong data-i18n="gCdnNoteBold">نکته:</strong> بخشی از این آی‌پی‌ها از نوع IPv6 و بخشی دیگر از نوع IPv4 هستند؛ بنابراین لازم است چند مورد را تست کنید تا آی‌پی مناسب خود را پیدا کنید.</p>
+      <p data-i18n="gCdnDesc3">در صورتی‌که آی‌پی یافت‌شده از نوع IPv4 باشد، می‌توانید از آن به‌عنوان <strong>آی‌پی ثابت</strong> خود استفاده کنید.</p>
+      <p data-i18n="gCdnDesc4">در آخر حتما روی دکمه ذخیره کلیک کنید.</p>
+    </div>
     </section>
 
     <section class="page" id="guide-logs">
@@ -556,6 +573,13 @@
     <span data-i18n="footer1">ساخته شده توسط تیم NEXA</span>
     <span data-i18n="footer2">مستندات</span>
   </footer>
+</div>
+
+<div class="lightbox" id="lightbox">
+  <button class="lightbox-close" id="lightboxClose" aria-label="Close">
+    <svg width="17" height="17"><use href="#icon-close"/></svg>
+  </button>
+  <img id="lightboxImg" src="" alt="">
 </div>
 
 <script src="source/script.js"></script>
