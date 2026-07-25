@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl" data-theme="dark" data-lang="fa">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title id="pageTitle">NEXA Panel · مستندات</title>
+<meta name="description" id="pageDesc" content="مستندات رسمی NEXA Panel — پنل مدیریتی سبک روی Cloudflare Workers">
+<link rel="icon" href="Images/nexa-logo.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="source/style.css">
+</head>
+<body>
+
+<svg style="display:none" aria-hidden="true">
+  <symbol id="icon-zap" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></symbol>
+  <symbol id="icon-cloud" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18h10.5a3.5 3.5 0 0 0 .6-6.95A5.5 5.5 0 0 0 7.6 8.6 4 4 0 0 0 7 18z"/></symbol>
+  <symbol id="icon-cursor" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 3l7.07 17 2.51-7.39L21 10.07z"/></symbol>
+  <symbol id="icon-wrench" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0-5.6 5.6L3 18l3 3 6.1-6.1a4 4 0 0 0 5.6-5.6l-2.8 2.8-2.8-2.8z"/></symbol>
+  <symbol id="icon-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></symbol>
+  <symbol id="icon-activity" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 8-6-16-3 8H2"/></symbol>
+  <symbol id="icon-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+  <symbol id="icon-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+  <symbol id="icon-save" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M7 3v6h8V3"/><path d="M7 21v-8h10v8"/></symbol>
+  <symbol id="icon-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 4 6 4 9s-1.5 6.5-4 9c-2.5-2.5-4-6-4-9s1.5-6.5 4-9z"/></symbol>
+  <symbol id="icon-filter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 3H2l8 9.5V19l4 2v-8.5z"/></symbol>
+  <symbol id="icon-rocket" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2c3 2.2 5 6 5 10 0 2-1 4-2 5l-3 3-3-3c-1-1-2-3-2-5 0-4 2-7.8 5-10z"/><circle cx="12" cy="10.5" r="1.8"/><path d="M8.5 16.5 6 19M15.5 16.5 18 19"/></symbol>
+  <symbol id="icon-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13M22 2 15 22l-4-9-9-4 20-7z"/></symbol>
+  <symbol id="icon-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M10 8.5 16 12l-6 3.5v-7z"/></symbol>
+  <symbol id="icon-tag" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4 11 3.8A2 2 0 0 0 9.6 3H4a1 1 0 0 0-1 1v5.6a2 2 0 0 0 .6 1.4l9.6 9.6a2 2 0 0 0 2.8 0l4.6-4.6a2 2 0 0 0 0-2.8z"/><circle cx="7.5" cy="7.5" r="1.4"/></symbol>
+  <symbol id="icon-github" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49 0-.24-.01-1.02-.01-1.85-2.78.62-3.37-1.21-3.37-1.21-.46-1.19-1.11-1.51-1.11-1.51-.9-.63.07-.62.07-.62 1 .07 1.53 1.05 1.53 1.05.89 1.55 2.34 1.1 2.91.84.09-.66.35-1.1.63-1.35-2.22-.26-4.56-1.14-4.56-5.06 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.31.1-2.73 0 0 .84-.28 2.75 1.05a9.3 9.3 0 0 1 5 0c1.91-1.33 2.75-1.05 2.75-1.05.55 1.42.2 2.47.1 2.73.64.72 1.03 1.63 1.03 2.75 0 3.93-2.35 4.79-4.58 5.05.36.32.68.94.68 1.9 0 1.37-.01 2.47-.01 2.81 0 .27.18.6.69.49C19.14 20.61 22 16.77 22 12.25 22 6.58 17.52 2 12 2z"/></symbol>
+  <symbol id="icon-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+  <symbol id="icon-server" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><circle cx="7" cy="7.5" r="0.9" fill="currentColor" stroke="none"/><circle cx="7" cy="16.5" r="0.9" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="icon-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h8"/></symbol>
+  <symbol id="icon-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+  <symbol id="icon-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5M12 8h.01"/></symbol>
+  <symbol id="icon-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M11 6l-6 6 6 6"/></symbol>
+  <symbol id="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+  <symbol id="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></symbol>
+  <symbol id="icon-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></symbol>
+  <symbol id="icon-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h18"/></symbol>
+  <symbol id="icon-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+</svg>
+
+<svg class="bg-signal" aria-hidden="true">
+  <defs>
+    <pattern id="dotgrid" width="26" height="26" patternUnits="userSpaceOnUse">
+      <circle cx="1.5" cy="1.5" r="1" fill="currentColor" opacity="0.10"/>
+    </pattern>
+  </defs>
+  <rect width="100%" height="100%" fill="url(#dotgrid)"/>
+</svg>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <div class="brand-mark"><svg viewBox="0 0 24 24"><use href="Images/nexa-logo.svg"/></svg></div>
+      <div class="brand-text">
+        <div class="name">NEXA Panel</div>
+        <div class="tag" id="brandTag">docs · …</div>
+      </div>
+    </div>
+
+    <nav class="topnav" id="topNav">
+      <div class="nav-group" data-group="start">
+        <button type="button" class="nav-group-btn" data-i18n="navStart">خانه<svg><use href="#icon-chevron"/></svg></button>
+        <div class="nav-dropdown">
+          <a href="#overview" data-i18n="navOverview" data-text="معرفی پروژه"><span class="dot"></span>معرفی</a>
+          <a href="#features" data-i18n="navFeatures" data-text="ویژگی ها امکانات"><span class="dot"></span>ویژگی‌ها</a>
+        </div>
+      </div>
+      <div class="nav-group" data-group="setup">
+        <button type="button" class="nav-group-btn" data-i18n="navSetup">نصب و راه‌اندازی<svg><use href="#icon-chevron"/></svg></button>
+        <div class="nav-dropdown">
+          <a href="#quick-deploy" data-i18n="navQuickDeploy" data-text="نصب سریع یک کلیکی"><span class="dot"></span>نصب سریع</a>
+          <a href="#manual-install" data-i18n="navManualInstall" data-text="نصب دستی ورکر D1 کرون"><span class="dot"></span>نصب دستی</a>
+        </div>
+      </div>
+      <div class="nav-group" data-group="guide">
+        <button type="button" class="nav-group-btn" data-i18n="navGuide">راهنمای پنل<svg><use href="#icon-chevron"/></svg></button>
+        <div class="nav-dropdown">
+          <a href="#guide-dashboard" data-i18n="navGuideDashboard" data-text="داشبورد"><span class="dot"></span>داشبورد</a>
+          <a href="#guide-users" data-i18n="navGuideUsers" data-text="مدیریت کاربران"><span class="dot"></span>مدیریت کاربران</a>
+          <a href="#guide-connect" data-i18n="navGuideConnect" data-text="آموزش اتصال"><span class="dot"></span>آموزش اتصال</a>
+          <a href="#guide-node" data-i18n="navGuideNode" data-text="سرور نود"><span class="dot"></span>سرور نود</a>
+          <a href="#guide-ipscan" data-i18n="navGuideIpscan" data-text="اسکنر آی پی تمیز"><span class="dot"></span>اسکنر IP تمیز</a>
+          <a href="#guide-cdn" data-i18n="navGuideCdn" data-text="پروکسی CDN کلودفلر"><span class="dot"></span>پروکسی CDN</a>
+          <a href="#guide-logs" data-i18n="navGuideLogs" data-text="لاگ فعالیت"><span class="dot"></span>لاگ فعالیت</a>
+          <a href="#guide-settings" data-i18n="navGuideSettings" data-text="تنظیمات پنل"><span class="dot"></span>تنظیمات پنل</a>
+        </div>
+      </div>
+      <div class="nav-group" data-group="community">
+        <button type="button" class="nav-group-btn" data-i18n="navCommunity">جامعه و منابع<svg><use href="#icon-chevron"/></svg></button>
+        <div class="nav-dropdown">
+          <a href="#links" data-i18n="navLinks" data-text="لینک ها تلگرام یوتیوب وبسایت"><span class="dot"></span>لینک های کاربردی</a>
+          <a href="#support" data-i18n="navSupport" data-text="حمایت مالی دونیت رمزارز"><span class="dot"></span>حمایت مالی</a>
+          <a href="#license" data-i18n="navLicense" data-text="لایسنس مجوز MIT"><span class="dot"></span>لایسنس</a>
+        </div>
+      </div>
+    </nav>
+
+    <div class="search-box">
+      <input type="text" id="searchInput" data-i18n-placeholder="searchPlaceholder" placeholder="جستوجو ..." autocomplete="off">
+      <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      <div class="search-results" id="searchResults"></div>
+    </div>
+
+    <div class="topbar-actions">
+      <button class="icon-btn lang-btn" id="langToggle" type="button" data-i18n-title="langToggleTitle">EN</button>
+      <button class="icon-btn" id="themeToggle" type="button" data-i18n-title="themeToLight">
+        <svg id="themeIcon"><use href="#icon-moon"/></svg>
+      </button>
+      <button class="icon-btn hamburger-btn" id="hamburgerBtn" type="button" aria-expanded="false" data-i18n-title="menuOpenTitle">
+        <svg id="hamburgerIcon"><use href="#icon-menu"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<div class="content-col">
+  <main id="mainScroll">
+
+    <section class="page" id="overview">
+      
+      <h1 id="ovH1" data-i18n-html="ovH1">پنل مدیریتی سبک، سریع و رایگان<br>روی Cloudflare Workers</h1>
+      <p class="lead" data-i18n="ovLead">NEXA Panel یک پنل مدیریتی است که کاملاً روی زیرساخت رایگان Cloudflare اجرا می‌شود؛ بدون نیاز به هیچ سرور جداگانه‌ای، نسخه‌ی اختصاصی خودتان را در چند دقیقه بالا می‌آورید.</p>
+
+      <div class="hero-links">
+        <a class="btn btn-primary" href="https://deploy.irnexa.workers.dev" target="_blank" rel="noopener" data-i18n="ovBtnDeploy">نصب سریع پنل ←</a>
+        <a class="btn btn-ghost" href="https://www.irnexa.workers.dev/" target="_blank" rel="noopener" data-i18n="ovBtnDemo">وبسایت نکسا</a>
+        <a class="btn btn-ghost" href="https://t.me/irnexa" target="_blank" rel="noopener" data-i18n="ovBtnTelegram">کانال تلگرام</a>
+      </div>
+
+      <div class="stat-row">
+        <div class="stat"><b data-i18n="ovStat1n">۰</b><span data-i18n="ovStat1s">سرور اختصاصی لازم</span></div>
+        <div class="stat"><b>MIT</b><span data-i18n="ovStat2s">لایسنس متن‌باز</span></div>
+        <div class="stat"><b>Free</b><span data-i18n="ovStat3s">پلن رایگان Cloudflare</span></div>
+        
+      </div>
+      <p style="margin-top:34px; font-weight:700; font-size:14.5px; color:var(--muted);" data-i18n="depimg">نمایی از داشبورد پنل</p>
+      <div class="frame-card">
+        <div class="bar"><span></span><span></span><span></span></div>
+        <img src="Images/dashboard.png" alt="NEXA Panel dashboard" data-i18n-alt="ovImgAlt">
+      </div>
+    </section>
+
+    <section class="page" id="features">
+      <div class="section-head">
+        <div class="section-num" data-i18n="featSectionNum">۰۲ / امکانات</div>
+        <h2 data-i18n="featH2">ویژگی‌ها</h2>
+      </div>
+      <div class="grid">
+        <div class="card"><span class="icon"><svg width="20" height="20"><use href="#icon-zap"/></svg></span><h3 data-i18n="feat1T">استقرار فوری</h3><p data-i18n="feat1D">بدون نیاز به سرور اختصاصی؛ فقط چند دقیقه تا بالا آمدن پنل.</p></div>
+        <div class="card"><span class="icon"><svg width="20" height="20"><use href="#icon-cloud"/></svg></span><h3 data-i18n="feat2T">پلن رایگان</h3><p data-i18n="feat2D">روی زیرساخت رایگان Cloudflare Workers و D1 اجرا می‌شود.</p></div>
+        <div class="card"><span class="icon"><svg width="20" height="20"><use href="#icon-cursor"/></svg></span><h3 data-i18n="feat3T">نصب یک‌کلیکی</h3><p data-i18n="feat3D">مناسب کاربران غیرفنی، بدون دستور خط فرمان.</p></div>
+        <div class="card"><span class="icon"><svg width="20" height="20"><use href="#icon-wrench"/></svg></span><h3 data-i18n="feat4T">نصب دستی</h3><p data-i18n="feat4D">کنترل کامل روی تنظیمات برای کاربران حرفه‌ای.</p></div>
+        <div class="card"><span class="icon"><svg width="20" height="20"><use href="#icon-clock"/></svg></span><h3 data-i18n="feat5T">به‌روزرسانی خودکار</h3><p data-i18n="feat5D">با Cron Trigger، پنل خودش را به‌صورت زمان‌بندی‌شده به‌روز می‌کند.</p></div>
+        <div class="card"><span class="icon"><svg width="20" height="20"><use href="#icon-activity"/></svg></span><h3 data-i18n="feat6T">کانفیگ VLESS</h3><p data-i18n="feat6D">ساخت خودکار کانفیگ با پروتکل VLESS.</p></div>
+        <div class="card"><span class="icon"><svg width="20" height="20"><use href="#icon-lock"/></svg></span><h3 data-i18n="feat7T">TLS / None-TLS</h3><p data-i18n="feat7D">پشتیبانی از هر دو نوع پورت برای انعطاف بیشتر.</p></div>
+        <div class="card"><span class="icon"><svg width="20" height="20"><use href="#icon-users"/></svg></span><h3 data-i18n="feat8T">مدیریت کاربران</h3><p data-i18n="feat8D">افزودن، ویرایش و نظارت بر کاربران پنل.</p></div>
+        <div class="card"><span class="icon"><svg width="20" height="20"><use href="#icon-save"/></svg></span><h3 data-i18n="feat9T">بکاپ خودکار و دستی</h3><p data-i18n="feat9D">پشتیبان‌گیری زمان‌بندی‌شده یا با یک کلیک.</p></div>
+        <div class="card"><span class="icon"><svg width="20" height="20"><use href="#icon-globe"/></svg></span><h3 data-i18n="feat10T">پروکسی آی‌پی ثابت</h3><p data-i18n="feat10D">مناسب کارهای عمومی؛ برای ترید و صرافی توصیه نمی‌شود.</p></div>
+        <div class="card"><span class="icon"><svg width="20" height="20"><use href="#icon-filter"/></svg></span><h3 data-i18n="feat11T">اسکنر آی‌پی تمیز</h3><p data-i18n="feat11D">پیدا کردن آی‌پی‌های سالم و بدون فیلتر.</p></div>
+      </div>
+    </section>
+
+    <section class="page" id="quick-deploy">
+      <div class="section-head">
+        <div class="section-num" data-i18n="qdSectionNum">۰۳ / راه‌اندازی</div>
+        <h2 data-i18n="qdH2">نصب سریع</h2>
+      </div>
+      <p data-i18n="qdP">فقط کافیست وارد صفحه‌ی ساخت پنل شوید و مراحل را دنبال کنید؛ پنل شما روی دامنه‌ی رایگان Cloudflare بالا می‌آید.</p>
+      <div class="hero-links">
+        <a class="btn btn-primary" href="https://deploy.irnexa.workers.dev" target="_blank" rel="noopener" data-i18n="qdBtn">رفتن به صفحه ساخت پنل ←</a>
+      </div>
+      <p style="margin-top:34px; font-weight:700; font-size:14.5px; color:var(--muted);" data-i18n="ovImgCaption">نمایی از داشبورد پنل</p>
+      <div class="frame-card">
+        <div class="bar"><span></span><span></span><span></span></div>
+        <img src="Images/deploy-page.png" alt="NEXA Panel dashboard" data-i18n-alt="ovImgAlt">
+      </div>
+    </section>
+
+    <section class="page" id="manual-install">
+      <div class="section-head">
+        <div class="section-num" data-i18n="miSectionNum">۰۴ / برای کاربران حرفه‌ای</div>
+        <h2 data-i18n="miH2">نصب دستی</h2>
+      </div>
+      <p style="color:var(--muted); margin-bottom:26px;" data-i18n="miP">اگر ترجیح می‌دهید پنل را قدم‌به‌قدم و با کنترل کامل خودتان راه‌اندازی کنید، این پنج مرحله را دنبال کنید.</p>
+
+<div class="manual-layout">
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">۱</div>
+      <div class="step-body">
+        <h3 data-i18n="step1T">دانلود اسکریپت</h3>
+        <p data-i18n="step1D">فایل اسکریپت پنل نکسا را دانلود کنید.</p>
+        <a class="btn btn-ghost" id="downloadScriptBtn" href="https://raw.githubusercontent.com/farzadqavidel/nexa-panel/main/nexa.js" target="_blank" rel="noopener" style="padding:8px 14px; font-size:13px;" data-i18n="step1Btn">دانلود nexa.js ←</a>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">۲</div>
+      <div class="step-body">
+        <h3 data-i18n="step2T">ساخت Worker و آپلود کد</h3>
+        <p data-i18n="step2D">یک Worker جدید در Cloudflare بسازید و کد دانلودشده را روی آن آپلود کنید.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">۳</div>
+      <div class="step-body">
+        <h3 data-i18n="step3T">ساخت D1 و بایند کردن</h3>
+        <p><span data-i18n="step3D_pre">یک D1 Database بسازید و آن را با نام</span> <code class="inline">DB</code> <span data-i18n="step3D_post">به Worker خودتان بایند کنید</span>.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">۴</div>
+      <div class="step-body">
+        <h3 data-i18n="step4T">تنظیم متغیر محیطی</h3>
+        <p><span data-i18n="step4D_pre">متغیر محیطی</span> <code class="inline">CF_API_TOKEN</code> <span data-i18n="step4D_post">را در تنظیمات Worker وارد کنید</span>.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">۵</div>
+      <div class="step-body">
+        <h3 data-i18n="step5T">تنظیم Cron Trigger</h3>
+        <p data-i18n="step5D">یک Cron Trigger با مقدار زیر برای Worker تنظیم کنید:</p>
+        <div class="code-block"><code>30 20 * * *</code></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ready-box">
+    <div class="rb-badge">✓ <span data-i18n="readyBadge">آماده</span></div>
+    <h3 data-i18n="readyTitle">اکنون پنل شما آماده است</h3>
+    <div class="rb-row">
+      <div class="rb-label" data-i18n="readyAdminLabel">ادرس پنل شما :</div>
+      <div class="rb-value">https://your-worker-address.workers.dev/admin</div>
+    </div>
+  </div>
+</div>
+    </section>
+
+    <!-- ===== Guide pages — each menu item is its own full page ===== -->
+
+    <section class="page" id="guide-dashboard">
+  <div class="guide-crumb"><svg><use href="#icon-arrow"/></svg><span data-i18n="guideCrumb">راهنمای پنل</span></div>
+  <div class="guide-title"><span class="gicon"><svg width="20" height="20"><use href="#icon-grid"/></svg></span><h2 data-i18n="gDashT">داشبورد</h2></div>
+  <p style="color:var(--muted)" data-i18n="gDashSub">نمای کلی از وضعیت مصرف، لینک اشتراک و مشخصات IP</p>
+
+  <div class="feature-block">
+    <div class="fb-shot">
+      <div class="bar"><span></span><span></span><span></span></div>
+      <img src="Images/mainsub.png" alt="Usage and subscription link">
+    </div>
+    <div class="fb-body">
+      <h3><span class="fb-num">1</span><span data-i18n="gDashPart1T">لینک اشتراک اصلی</span></h3>
+      <p data-i18n="gDashPart1D">در این قسمت شما میتوانید به اشتراک اصلی پنل خود دسترسی داشته باشید</p>
+    </div>
+  </div>
+
+
+  <div class="feature-block">
+    <div class="fb-shot">
+      <div class="bar"><span></span><span></span><span></span></div>
+      <img src="Images/worker-request.png" alt="IP details">
+    </div>
+    <div class="fb-body">
+      <h3><span class="fb-num">2</span><span data-i18n="gDashPart2T">نمایش مصرف ریکوئست</span></h3>
+      <p data-i18n="gDashPart2D">در این قسمت میتوانید مصرف ریکوئست کل و کاربران خود را ببینید</p>
+    </div>
+  </div>
+
+  <div class="feature-block">
+    <div class="fb-shot">
+      <div class="bar"><span></span><span></span><span></span></div>
+      <img src="Images/ipinfo.png" alt="Server map">
+    </div>
+    <div class="fb-body">
+      <h3><span class="fb-num">۳</span><span data-i18n="gDashPart3T">نمایش ایپی شما</span></h3>
+      <p data-i18n="gDashPart3D">نمایش ایپی شما و نمایش موقعیت تقریبی شما روی نقشه</p>
+    </div>
+  </div>
+
+</section>
+
+    <section class="page" id="guide-users">
+  <div class="guide-crumb"><svg><use href="#icon-arrow"/></svg><span data-i18n="guideCrumb">راهنمای پنل</span></div>
+  <div class="guide-title"><span class="gicon"><svg width="20" height="20"><use href="#icon-users"/></svg></span><h2 data-i18n="gUsersT">مدیریت کاربران</h2></div>
+  <p style="color:var(--muted)" data-i18n="gUsersSub">افزودن، ویرایش و مشاهده‌ی وضعیت کاربران .</p>
+
+  <div class="feature-block">
+    <div class="fb-shot">
+      <div class="bar"><span></span><span></span><span></span></div>
+      <img src="Images/users-list.png" alt="Users list">
+    </div>
+    <div class="fb-body">
+      <h3><span class="fb-num">1</span><span data-i18n="gUsersPart1T">نمایش وضعیت سرویس‌ها و کاربران</span></h3>
+      <p data-i18n="gUsersPart1D">نمایش وضعیت سرویس‌ها و کاربران و مدیریت و ویرایش آن‌ها</p>
+    </div>
+  </div>
+
+
+  <div class="feature-pair">
+    <div class="fp-shot">
+      <div class="bar"><span></span><span></span><span></span></div>
+      <img src="Images/create-user-1.png" alt="Create user step 1">
+    </div>
+    <div class="fp-shot">
+      <div class="bar"><span></span><span></span><span></span></div>
+      <img src="Images/create-user-2.png" alt="Create user step 2">
+    </div>
+  </div>
+  <div class="feature-pair-body">
+    <h3><span class="fb-num">2</span><span data-i18n="gUsersPart2T">آموزش ساخت کاربر</span></h3>
+    <p data-i18n="gUsersPart2D_1">از این بخش می‌توانید برای کاربر حجم، زمان و ریکوئست‌ها را مدیریت کنید. همچنین می‌توانید از پورت‌های TLS و None-TLS استفاده کنید.</p>
+    <p data-i18n-html="gUsersPart2D_2">همان‌طور که در عکس دوم مشاهده می‌کنید، می‌توانید در این بخش از طریق سرور یا مخزن پنل، آی‌پی تمیز برای کاربر ست کنید. (<a class="inline-link" href="#guide-ipscan" onclick="showPage('guide-ipscan')" data-i18n="gUsersIpscanLink">آموزش استفاده از آی‌پی تمیز</a>)</p>
+    <p data-i18n="gUsersPart2D_3">فینگرپرینت روی حالت پیش‌فرض (در حال حاضر بهترین حالت Chrome است) تنظیم شده است.</p>
+    <p data-i18n-html="gUsersPart2D_4">همچنین می‌توانید پروکسی آی‌پی جدا برای کاربر ست کنید. (<a class="inline-link" href="#guide-cdn" onclick="showPage('guide-cdn')" data-i18n="gUsersProxyLink">آموزش استفاده از پروکسی آی‌پی</a>)</p>
+  </div>
+
+
+  <div class="feature-block">
+    <div class="fb-shot">
+      <div class="bar"><span></span><span></span><span></span></div>
+      <img src="Images/user-buttons.png" alt="User action buttons">
+    </div>
+    <div class="fb-body">
+      <h3><span class="fb-num">3</span><span data-i18n="gUsersPart3T">آموزش دکمه‌ها</span></h3>
+      <p data-i18n="gUsersPart3D_1">از طریق دکمه‌ی کپی سابسکریپشن به لینک اشتراک دسترسی پیدا کنید.</p>
+      <p data-i18n="gUsersPart3D_2">از قسمت qrcode اشتراک می‌توانید اشتراک را به‌صورت QR کد وارد کلاینت خود کنید.</p>
+      <p data-i18n="gUsersPart3D_3">قسمت وضعیت سرویس برای ارائه به کاربر جهت دیدن وضعیت خودش است.</p>
+      <p data-i18n="gUsersPart3D_4">قسمت لاگ اتصال، مشخصات کاربرانی که به سرویس متصل شده‌اند را نمایش می‌دهد؛ مانند آی‌پی، زمان اتصال و نوع ریکوئست (تست اتصال یا متصل‌شدن به سرویس).</p>
+      <p data-i18n="gUsersPart3D_5">دکمه‌های زیر اسم سرویس به ترتیب از راست: توقف سرویس، ریست حجم سرویس کاربر، ریست زمان سرویس کاربر، ویرایش سرویس کاربر، ذخیره سرویس (برای جلوگیری از حذف خودکار) و حذف کامل سرویس.</p>
+      <p data-i18n="gUsersPart3D_6">نکته: سرویس اصلی قابل حذف نیست، چرا که سرورهای نود روی سرویس اصلی اجرا خواهند شد.</p>
+    </div>
+  </div>
+</section>
+
+    <section class="page" id="guide-connect">
+      <div class="guide-crumb"><svg><use href="#icon-arrow"/></svg><span data-i18n="guideCrumb">راهنمای پنل</span></div>
+      <div class="guide-title"><span class="gicon"><svg width="20" height="20"><use href="#icon-send"/></svg></span><h2 data-i18n="gConnT">آموزش اتصال</h2></div>
+      <p style="color:var(--muted)" data-i18n="gConnSub">راهنمای گام‌به‌گام اتصال برای اندروید، آیفون، ویندوز و مک.</p>
+      <div class="guide-shot"><div class="bar"><span></span><span></span><span></span></div><img src="Images/connect-guide.png" alt="Connection guide" data-i18n-alt="gConnT"></div>
+      <div class="guide-desc">
+        <div class="gd-label"><svg width="13" height="13"><use href="#icon-info"/></svg><span data-i18n="guideDescLabel">توضیحات</span></div>
+        <p data-i18n="gConnDesc">این قسمت اموزش وارد کردن لینک سابسکریپشن را به کلاینت مربوطه میدهد</p>
+      </div>
+    </section>
+
+    <section class="page" id="guide-node">
+      <div class="guide-crumb"><svg><use href="#icon-arrow"/></svg><span data-i18n="guideCrumb">راهنمای پنل</span></div>
+      <div class="guide-title"><span class="gicon"><svg width="20" height="20"><use href="#icon-server"/></svg></span><h2 data-i18n="gNodeT">سرور نود</h2></div>
+      <p style="color:var(--muted)" data-i18n="gNodeSub">مدیریت نودهای متصل به پنل.</p>
+      <div class="guide-shot">
+        <div class="bar"><span></span><span></span><span></span></div><img src="Images/node.png" alt="Node server" data-i18n-alt="gNodeT"></div>
+      <div class="guide-desc">
+        <div class="gd-label"><svg width="13" height="13"><use href="#icon-info"/></svg><span data-i18n="guideDescLabel">توضیحات</span></div>
+        <p data-i18n="gNodeDesc">در این قسمت میتوانید به سرور های نود سرویس اصلی وصل شوید این نود ها بر پایه پورت های  tls کلادفلر میباشد که در قسمت ادرس به جای قرار گرفتن ایپی تمیز ادرس ورکر شما قرار میگیرد (حالت خودکار )</p>
+      </div>
+    </section>
+
+    <section class="page" id="guide-ipscan">
+      <div class="guide-crumb"><svg><use href="#icon-arrow"/></svg><span data-i18n="guideCrumb">راهنمای پنل</span></div>
+      <div class="guide-title"><span class="gicon"><svg width="20" height="20"><use href="#icon-filter"/></svg></span><h2 data-i18n="gIpT">اسکنر IP تمیز</h2></div>
+      <p style="color:var(--muted)" data-i18n="gIpSub">پیدا کردن سریع‌ترین آی‌پی‌های تمیز کلودفلر برای شبکه‌ی شما.</p>
+      <div class="guide-shot"><div class="bar"><span></span><span></span><span></span></div><img src="Images/ip-scanner.png" alt="Clean IP scanner" data-i18n-alt="gIpT"></div>
+      <div class="guide-desc">
+        <div class="gd-label"><svg width="13" height="13"><use href="#icon-info"/></svg><span data-i18n="guideDescLabel">توضیحات</span></div>
+        <p data-i18n-html="gIpDesc">حالت اول: اسکن با اینترنت شما — در این حالت مطابق اینترنت و ISP ارائه‌دهنده اینترنت شما اسکن انجام می‌شود و بهترین آی‌پی‌ها برای شما یافت خواهد شد.<br>حالت دوم: دریافت آی‌پی تمیز از سرور — در این حالت آی‌پی‌های اسکن‌شده از قبل، از طریق سرور ما به دست شما می‌رسد.</p>
+      </div>
+    </section>
+
+    <section class="page" id="guide-cdn">
+      <div class="guide-crumb"><svg><use href="#icon-arrow"/></svg><span data-i18n="guideCrumb">راهنمای پنل</span></div>
+      <div class="guide-title"><span class="gicon"><svg width="20" height="20"><use href="#icon-cloud"/></svg></span><h2 data-i18n="gCdnT">پروکسی CDN</h2></div>
+      <p style="color:var(--muted)" data-i18n="gCdnSub">تنظیمات دسترسی CDN کلودفلر و PROXYIP.</p>
+      <div class="guide-shot"><div class="no-shot"><svg><use href="#icon-info"/></svg><span data-i18n="gCdnT2">تصویر این بخش هنوز اضافه نشده</span></div></div>
+      <div class="guide-desc">
+        <div class="gd-label"><svg width="13" height="13"><use href="#icon-info"/></svg><span data-i18n="guideDescLabel">توضیحات</span></div>
+        <p data-i18n="gCdnDesc"></p>
+      </div>
+    </section>
+
+    <section class="page" id="guide-logs">
+      <div class="guide-crumb"><svg><use href="#icon-arrow"/></svg><span data-i18n="guideCrumb">راهنمای پنل</span></div>
+      <div class="guide-title"><span class="gicon"><svg width="20" height="20"><use href="#icon-file"/></svg></span><h2 data-i18n="gLogsT">لاگ فعالیت</h2></div>
+      <p style="color:var(--muted)" data-i18n="gLogsSub">نمایش لاگ پنل شما</p>
+      <div class="guide-shot"><div class="bar"><span></span><span></span><span></span></div><img src="Images/logs.png" alt="Activity log" data-i18n-alt="gLogsT"></div>
+      <div class="guide-desc">
+        <div class="gd-label"><svg width="13" height="13"><use href="#icon-info"/></svg><span data-i18n="guideDescLabel">توضیحات</span></div>
+        <p data-i18n="gLogsDesc">در این بهش میتوانید لاگ پنل خود را مشاهده کنید همچنین میتوانید با تنظیم توکن ربات تلگرام لاگ پنل خود را از طریق تلگرام دریافت کنید..</p>
+      </div>
+    </section>
+
+    <section class="page" id="guide-settings">
+  <div class="guide-crumb"><svg><use href="#icon-arrow"/></svg><span data-i18n="guideCrumb">راهنمای پنل</span></div>
+  <div class="guide-title"><span class="gicon"><svg width="20" height="20"><use href="#icon-settings"/></svg></span><h2 data-i18n="gSetT">تنظیمات پنل</h2></div>
+  <p style="color:var(--muted)" data-i18n="gSetSub">به‌روزرسانی، مسیر صفحات، نام‌گذاری کانفیگ و قطع اضطراری سرویس‌ها.</p>
+
+  <div class="feature-block">
+    <div class="fb-shot">
+      <div class="bar"><span></span><span></span><span></span></div>
+      <img src="Images/settings-update.png" alt="Panel update">
+    </div>
+    <div class="fb-body">
+      <h3><span class="fb-num">1</span><span data-i18n="gSetPart1T">به‌روزرسانی پنل</span></h3>
+      <p data-i18n="gSetPart1D">در این بخش نسخه‌ی فعلی پنل شما و آخرین نسخه‌ی موجود روی سرور نمایش داده می‌شود. با زدن دکمه‌ی «به‌روزرسانی پنل»، آخرین تغییرات و ویژگی‌های جدید روی پنل شما نصب می‌شود.</p>
+    </div>
+  </div>
+
+  <div class="feature-block">
+    <div class="fb-shot">
+      <div class="bar"><span></span><span></span><span></span></div>
+      <img src="Images/settings-emergency.png" alt="Emergency stop">
+    </div>
+    <div class="fb-body">
+      <h3><span class="fb-num">2</span><span data-i18n="gSetPart2T">قطع اضطراری تمامی سرویس‌ها</span></h3>
+      <p data-i18n="gSetPart2D">با فعال کردن این گزینه، دسترسی تمام کاربران به‌صورت لحظه‌ای قطع می‌شود؛ مناسب مواقعی که نیاز به توقف سریع کل سرویس‌ها دارید. برای بازگرداندن دسترسی، کافیست همین گزینه را دوباره غیرفعال کنید.</p>
+    </div>
+  </div>
+
+  <div class="feature-block">
+    <div class="fb-shot">
+      <div class="bar"><span></span><span></span><span></span></div>
+      <img src="Images/settings-paths.png" alt="Page path settings">
+    </div>
+    <div class="fb-body">
+      <h3><span class="fb-num">3</span><span data-i18n="gSetPart3T">تنظیمات آدرس صفحات</span></h3>
+      <p data-i18n="gSetPart3D">از این قسمت می‌توانید مسیر ورود به پنل مدیریت و همچنین آدرس صفحات وضعیت سرویس، لینک اشتراک (ساب) و لاگ اتصال کاربران را به دلخواه خودتان تغییر دهید تا شناسایی و حدس زدن آن‌ها برای دیگران سخت‌تر شود.</p>
+    </div>
+  </div>
+
+  <div class="feature-block">
+    <div class="fb-shot">
+      <div class="bar"><span></span><span></span><span></span></div>
+      <img src="Images/settings-confignames.png" alt="Config naming">
+    </div>
+    <div class="fb-body">
+      <h3><span class="fb-num">4</span><span data-i18n="gSetPart4T">نام‌گذاری کانفیگ‌ها</span></h3>
+      <p data-i18n="gSetPart4D">در این بخش می‌توانید قالب نام کانفیگ‌ها و مشخصات نمایشی سرویس (مثل حجم مصرفی، حجم کل، روزهای باقی‌مانده و پورت) را با استفاده از متغیرهایی مانند <code class="inline">{used}</code>، <code class="inline">{total}</code> و <code class="inline">{dayremind}</code> شخصی‌سازی کنید.</p>
+    </div>
+  </div>
+
+  <div class="feature-block">
+    <div class="fb-shot">
+      <div class="bar"><span></span><span></span><span></span></div>
+      <img src="Images/settings-backup.png" alt="Panel backup">
+    </div>
+    <div class="fb-body">
+      <h3><span class="fb-num">5</span><span data-i18n="gSetPart5T">بکاپ‌گیری از پنل</span></h3>
+      <p data-i18n="gSetPart5D_1">می‌توانید یک نسخه‌ی پشتیبان کامل از کاربران، تنظیمات و لاگ‌های پنل دریافت یا یک بکاپ قبلی را بارگذاری کنید.</p>
+      <p data-i18n="gSetPart5D_2">با فعال کردن «بکاپ خودکار روزانه» و وارد کردن توکن ربات تلگرام و شناسه چت، پنل هر روز رأس ساعت مشخص‌شده یک بکاپ کامل برای شما به تلگرام ارسال می‌کند.</p>
+      <p data-i18n="gSetPart5D_3">گزینه‌ی «بازنشانی تمام تنظیمات» تمام کاربران، پروکسی‌ها، تنظیمات تلگرام و لاگ‌ها را پاک کرده و پنل را به حالت اولیه بازمی‌گرداند؛ این عملیات غیرقابل بازگشت است.</p>
+    </div>
+  </div>
+
+  <div class="feature-block">
+    <div class="fb-shot">
+      <div class="bar"><span></span><span></span><span></span></div>
+      <img src="Images/settings-blocklist.png" alt="Domain blocking">
+    </div>
+    <div class="fb-body">
+      <h3><span class="fb-num">6</span><span data-i18n="gSetPart6T">مسدودسازی دامنه و فیلتر محتوای بزرگسال</span></h3>
+      <p data-i18n="gSetPart6D_1">در این قسمت می‌توانید فهرستی از دامنه‌ها را وارد کنید تا کاربران پنل نتوانند از طریق پروکسی به آن‌ها متصل شوند؛ با مسدود کردن هر دامنه، تمام زیردامنه‌های آن نیز مسدود خواهند شد.</p>
+      <p data-i18n="gSetPart6D_2">با فعال کردن «مسدودسازی محتوای بزرگسال»، دسترسی به سایت‌های دارای محتوای نامناسب (۱۸+) برای تمام کاربران پنل به‌صورت خودکار مسدود می‌شود.</p>
+    </div>
+  </div>
+
+  <div class="feature-block">
+    <div class="fb-shot">
+      <div class="bar"><span></span><span></span><span></span></div>
+      <img src="Images/settings-cfapi.png" alt="Cloudflare API settings">
+    </div>
+    <div class="fb-body">
+      <h3><span class="fb-num">7</span><span data-i18n="gSetPart7T">تنظیمات Cloudflare API</span></h3>
+      <p data-i18n="gSetPart7D">با وارد کردن CF_TOKEN، پنل به‌صورت خودکار به حساب Cloudflare شما متصل شده و Account ID را دریافت می‌کند؛ این توکن برای ساخت و مدیریت خودکار سرورهای نود و سایر عملیات ورکر لازم است و نیازی به وارد کردن دستی Account ID نیست.</p>
+    </div>
+  </div>
+
+  <div class="feature-block">
+    <div class="fb-shot">
+      <div class="bar"><span></span><span></span><span></span></div>
+      <img src="Images/settings-password.png" alt="Change admin password">
+    </div>
+    <div class="fb-body">
+      <h3><span class="fb-num">8</span><span data-i18n="gSetPart8T">تغییر رمز عبور مدیریت</span></h3>
+      <p data-i18n="gSetPart8D">برای افزایش امنیت پنل، می‌توانید رمز عبور ورود به بخش مدیریت را از همین قسمت تغییر دهید. رمز عبور جدید در متغیر محیطی <code class="inline">ADMIN</code> در Cloudflare Workers ذخیره می‌شود.</p>
+    </div>
+  </div>
+
+</section>
+
+
+    <section class="page" id="links">
+      <div class="section-head">
+        <div class="section-num" data-i18n="linksSectionNum">۰۶ / منابع</div>
+        <h2 data-i18n="linksH2">لینک های کاربردی</h2>
+      </div>
+      <div class="link-grid">
+        <a class="link-card" href="https://www.irnexa.workers.dev/" target="_blank" rel="noopener">
+          <div class="lc-icon"><svg width="17" height="17"><use href="#icon-globe"/></svg></div>
+          <div><div class="lc-title" data-i18n="linkWebsite">وب‌سایت</div><div class="lc-sub">irnexa.workers.dev</div></div>
+        </a>
+        <a class="link-card" href="https://deploy.irnexa.workers.dev" target="_blank" rel="noopener">
+          <div class="lc-icon"><svg width="17" height="17"><use href="#icon-rocket"/></svg></div>
+          <div><div class="lc-title" data-i18n="linkDeploy">صفحه نصب</div><div class="lc-sub">deploy.irnexa.workers.dev</div></div>
+        </a>
+        <a class="link-card" href="https://t.me/irnexa" target="_blank" rel="noopener">
+          <div class="lc-icon"><svg width="17" height="17"><use href="#icon-send"/></svg></div>
+          <div><div class="lc-title" data-i18n="linkTelegram">کانال تلگرام</div><div class="lc-sub">t.me/irnexa</div></div>
+        </a>
+        <a class="link-card" href="https://www.youtube.com/@IR_NEXA" target="_blank" rel="noopener">
+          <div class="lc-icon"><svg width="17" height="17"><use href="#icon-play"/></svg></div>
+          <div><div class="lc-title" data-i18n="linkYoutube">یوتیوب</div><div class="lc-sub">@IR_NEXA</div></div>
+        </a>
+        <a class="link-card" href="https://github.com/farzadqavidel/nexa-panel" target="_blank" rel="noopener">
+          <div class="lc-icon"><svg width="17" height="17"><use href="#icon-github"/></svg></div>
+          <div><div class="lc-title" data-i18n="linkGithub">مخزن گیت‌هاب</div><div class="lc-sub">nexa-panel</div></div>
+        </a>
+        <a class="link-card" id="releaseLinkCard" href="https://github.com/farzadqavidel/nexa-panel/releases" target="_blank" rel="noopener">
+          <div class="lc-icon"><svg width="17" height="17"><use href="#icon-tag"/></svg></div>
+          <div><div class="lc-title" data-i18n="linkRelease">آخرین نسخه</div><div class="lc-sub" id="releaseLinkSub">…</div></div>
+        </a>
+      </div>
+    </section>
+
+    <section class="page" id="support">
+      <div class="section-head">
+        <div class="section-num" data-i18n="supportSectionNum">۰۷ / حمایت</div>
+        <h2 data-i18n="supportH2">حمایت مالی</h2>
+      </div>
+      <p style="color:var(--muted); margin-bottom:18px;" data-i18n="supportP">اگر این پروژه برایتان مفید بوده، می‌توانید با ارسال رمزارز از پروژه حمایت کنید 🙏</p>
+      <table>
+        <thead><tr><th data-i18n="thCurrency">ارز</th><th data-i18n="thWallet">آدرس کیف پول</th></tr></thead>
+        <tbody>
+          <tr><td>USDT (ERC20)</td><td><code>0x78684D142CfD0dF27Cea2b2f62d98aBa0D4bc288</code><button class="copy-btn" data-copy="0x78684D142CfD0dF27Cea2b2f62d98aBa0D4bc288" data-i18n="copyBtn">کپی</button></td></tr>
+          <tr><td>TON (GRAM)</td><td><code>UQBk2fhFpLgktSVucFgXdsjqNDHzHv-0GRlbN2jplnz94GZh</code><button class="copy-btn" data-copy="UQBk2fhFpLgktSVucFgXdsjqNDHzHv-0GRlbN2jplnz94GZh" data-i18n="copyBtn">کپی</button></td></tr>
+          <tr><td>BTC</td><td><code>bc1qzzekk7y5fpzndywzk2jhmd8vv4wd7sdrq5csvu</code><button class="copy-btn" data-copy="bc1qzzekk7y5fpzndywzk2jhmd8vv4wd7sdrq5csvu" data-i18n="copyBtn">کپی</button></td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="page" id="license">
+      <div class="section-head">
+        <div class="section-num" data-i18n="licenseSectionNum">۰۸ / قانونی</div>
+        <h2 data-i18n="licenseH2">لایسنس</h2>
+      </div>
+      <p>
+        <span data-i18n="licenseP_pre">این پروژه تحت لایسنس</span> <strong>MIT</strong> <span data-i18n="licenseP_mid">منتشر شده است. برای جزئیات بیشتر فایل</span> <a href="https://github.com/farzadqavidel/nexa-panel/blob/main/LICENSE"><code class="inline">LICENSE</code></a> <span data-i18n="licenseP_or">یا صفحه‌ی رسمی</span> <a href="https://opensource.org/licenses/MIT" target="_blank" rel="noopener" style="color:var(--accent-2); text-decoration:underline;" data-i18n="licenseP_link">MIT License</a> <span data-i18n="licenseP_end">را ببینید</span>.
+      </p>
+    </section>
+
+  </main>
+
+  <footer>
+    <span data-i18n="footer1">ساخته شده توسط تیم NEXA</span>
+    <span data-i18n="footer2">مستندات</span>
+  </footer>
+</div>
+
+<script src="source/script.js"></script>
+</body>
+</html>
