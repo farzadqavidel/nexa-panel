@@ -41,7 +41,10 @@
     gUsersPart1D:{fa:'نمایش وضعیت سرویس‌ها و کاربران و مدیریت و ویرایش آن‌ها', en:'Shows the status of services and users, and lets you manage and edit them.'},
     gSetPart1T:{fa:'به‌روزرسانی پنل', en:'Panel update'},
     gSetPart1D:{fa:'در این بخش نسخه‌ی فعلی پنل شما و آخرین نسخه‌ی موجود روی سرور نمایش داده می‌شود. با زدن دکمه‌ی «به‌روزرسانی پنل»، آخرین تغییرات و ویژگی‌های جدید روی پنل شما نصب می‌شود.', en:'This section shows your current panel version and the latest version available on the server. Clicking "Update Panel" installs the latest changes and new features.'},
-      
+    step0T:{fa:'ثبت‌نام در Cloudflare',en:'Sign up on Cloudflare'},
+    step0D:{fa:'وارد آدرس <a href="https://dash.cloudflare.com/" target="_blank" rel="noopener" class="inline-link">dash.cloudflare.com</a> بشید و با ایمیل خودتون ثبت‌نام کنید.',en:'Go to <a href="https://dash.cloudflare.com/" target="_blank" rel="noopener" class="inline-link">dash.cloudflare.com</a> and sign up with your email.'},
+    stepEmailT:{fa:'تایید ایمیل',en:'Verify your email'},
+    stepEmailD:{fa:'بعد از ثبت‌نام، یک ایمیل تاییدیه به ایمیلتون ارسال می‌شه؛ کافیه اون ایمیل رو باز کنید و روی «تایید حساب من» بزنید تا حساب شما تایید بشه.',en:'After signing up, a confirmation email will be sent to your inbox; open it and click "Confirm my account" to verify your account.'},
     gSetPart2T:{fa:'قطع اضطراری تمامی سرویس‌ها', en:'Emergency stop all services'},
     gSetPart2D:{fa:'با فعال کردن این گزینه، دسترسی تمام کاربران به‌صورت لحظه‌ای قطع می‌شود؛ مناسب مواقعی که نیاز به توقف سریع کل سرویس‌ها دارید. برای بازگرداندن دسترسی، کافیست همین گزینه را دوباره غیرفعال کنید.', en:'Enabling this instantly cuts off access for all users — useful when you need to stop everything quickly. Disable it again to restore access.'},
       
@@ -113,7 +116,7 @@
 
     miSectionNum:{fa:'۰۴ / برای کاربران حرفه‌ای',en:'04 / For Advanced Users'},
     miH2:{fa:'نصب دستی',en:'Manual Install'},
-    miP:{fa:'اگر ترجیح می‌دهید پنل را قدم‌به‌قدم و با کنترل کامل خودتان راه‌اندازی کنید، این پنج مرحله را دنبال کنید.',en:"If you'd rather set up the panel step by step with full control, follow these five steps."},
+    miP:{fa:'اگر ترجیح می‌دهید پنل را قدم‌به‌قدم و با کنترل کامل خودتان راه‌اندازی کنید، این مراحل را دنبال کنید.',en:"If you'd rather set up the panel step by step with full control, follow these steps."},
     step1T:{fa:'دانلود اسکریپت',en:'Download the Script'}, step1D:{fa:'فایل اسکریپت پنل نکسا را دانلود کنید.',en:'Download the NEXA Panel script file.'},
     step1Btn:{fa:'دانلود nexa.js ←',en:'Download nexa.js ←'},
     step2T:{fa:'ساخت Worker و آپلود کد',en:'Create a Worker & Upload the Code'}, step2D:{fa:'یک Worker جدید در Cloudflare بسازید و کد دانلودشده را روی آن آپلود کنید.',en:'Create a new Worker on Cloudflare and upload the downloaded code to it.'},

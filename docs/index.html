@@ -193,12 +193,26 @@
         <div class="section-num" data-i18n="miSectionNum">۰۴ / برای کاربران حرفه‌ای</div>
         <h2 data-i18n="miH2">نصب دستی</h2>
       </div>
-      <p style="color:var(--muted); margin-bottom:26px;" data-i18n="miP">اگر ترجیح می‌دهید پنل را قدم‌به‌قدم و با کنترل کامل خودتان راه‌اندازی کنید، این پنج مرحله را دنبال کنید.</p>
+      <p style="color:var(--muted); margin-bottom:26px;" data-i18n="miP">اگر ترجیح می‌دهید پنل را قدم‌به‌قدم و با کنترل کامل خودتان راه‌اندازی کنید، این مراحل را دنبال کنید.</p>
 
 <div class="manual-layout">
   <div class="steps">
     <div class="step">
-      <div class="step-num">۱</div>
+      <div class="step-num">1</div>
+      <div class="step-body">
+        <h3 data-i18n="step0T">ثبت‌نام در Cloudflare</h3>
+        <p data-i18n-html="step0D"></p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-body">
+        <h3 data-i18n="stepEmailT">تایید ایمیل</h3>
+        <p data-i18n="stepEmailD">بعد از ثبت‌نام، یک ایمیل تاییدیه به ایمیلتون ارسال می‌شه؛ کافیه اون ایمیل رو باز کنید و روی «تایید حساب من» بزنید تا حساب شما تایید بشه.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
       <div class="step-body">
         <h3 data-i18n="step1T">دانلود اسکریپت</h3>
         <p data-i18n="step1D">فایل اسکریپت پنل نکسا را دانلود کنید.</p>
@@ -206,28 +220,28 @@
       </div>
     </div>
     <div class="step">
-      <div class="step-num">۲</div>
+      <div class="step-num">4</div>
       <div class="step-body">
         <h3 data-i18n="step2T">ساخت Worker و آپلود کد</h3>
         <p data-i18n="step2D">یک Worker جدید در Cloudflare بسازید و کد دانلودشده را روی آن آپلود کنید.</p>
       </div>
     </div>
     <div class="step">
-      <div class="step-num">۳</div>
+      <div class="step-num">5</div>
       <div class="step-body">
         <h3 data-i18n="step3T">ساخت D1 و بایند کردن</h3>
         <p><span data-i18n="step3D_pre">یک D1 Database بسازید و آن را با نام</span> <code class="inline">DB</code> <span data-i18n="step3D_post">به Worker خودتان بایند کنید</span>.</p>
       </div>
     </div>
     <div class="step">
-      <div class="step-num">۴</div>
+      <div class="step-num">6</div>
       <div class="step-body">
         <h3 data-i18n="step4T">تنظیم متغیر محیطی</h3>
         <p><span data-i18n="step4D_pre">متغیر محیطی</span> <code class="inline">CF_API_TOKEN</code> <span data-i18n="step4D_post">را در تنظیمات Worker وارد کنید</span>.</p>
       </div>
     </div>
     <div class="step">
-      <div class="step-num">۵</div>
+      <div class="step-num">7</div>
       <div class="step-body">
         <h3 data-i18n="step5T">تنظیم Cron Trigger</h3>
         <p data-i18n="step5D">یک Cron Trigger با مقدار زیر برای Worker تنظیم کنید:</p>
