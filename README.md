@@ -67,19 +67,25 @@ Just open the deploy page and follow the steps — your panel will be live on Cl
 
 If you prefer setting things up step by step with full control:
 
-1. **Download the script**
+1. **Sign up on Cloudflare**
+   Go to [https://dash.cloudflare.com/](https://dash.cloudflare.com/) and sign up with your email.
+
+2. **Verify your email**
+   After signing up, a confirmation email will be sent to your inbox; open it and click "Confirm my account" to verify your account.
+
+3. **Download the script**
    Download the NEXA panel script file.
 
-2. **Create a Worker & upload the code**
+4. **Create a Worker & upload the code**
    Create a new Worker on Cloudflare and upload the downloaded code onto it.
 
-3. **Create D1 & bind it**
+5. **Create D1 & bind it**
    Create a D1 Database and bind it to your Worker with the name `DB`.
 
-4. **Set the `CF_API_TOKEN` variable**
+6. **Set the `CF_API_TOKEN` variable**
    Enter the `CF_API_TOKEN` environment variable in your Worker settings.
 
-5. **Set the Cron Trigger**
+7. **Set the Cron Trigger**
    Set a Cron Trigger for the Worker with the following value:
 
    ```
