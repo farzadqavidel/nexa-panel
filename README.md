@@ -68,7 +68,7 @@ Just open the deploy page and follow the steps — your panel will be live on Cl
 If you prefer setting things up step by step with full control:
 
 1. **Sign up on Cloudflare**
-   Go to [https://dash.cloudflare.com/](https://dash.cloudflare.com/) and sign up with your email.
+   Go to [Cloudflare Dashboard](https://dash.cloudflare.com) and sign up with your email.
 
 2. **Verify your email**
    After signing up, a confirmation email will be sent to your inbox; open it and click "Confirm my account" to verify your account.
@@ -92,15 +92,6 @@ If you prefer setting things up step by step with full control:
    30 20 * * *
    ```
 
-## 💖 Support the Project
-
-If this project has been useful to you, consider supporting it with a crypto donation 🙏
-
-| Currency | Wallet Address |
-|---|---|
-| USDT (ERC20) | `0x78684D142CfD0dF27Cea2b2f62d98aBa0D4bc288` |
-| TON (GRAM) | `UQBk2fhFpLgktSVucFgXdsjqNDHzHv-0GRlbN2jplnz94GZh` |
-| BTC | `bc1qzzekk7y5fpzndywzk2jhmd8vv4wd7sdrq5csvu` |
 
 ## 📄 License
 
