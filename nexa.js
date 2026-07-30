@@ -98,6 +98,12 @@ const CLEAN_IP_OPERATOR_KEYS = {
 };
 let cleanIpsCache = { data: null, fetchedAt: 0 };
 let blockedDomainsCache = { enabled: false, domains: [], fetchedAt: 0 };
+let systemUserCache = { user: null, fetchedAt: 0 };
+const SYSTEM_USER_CACHE_TTL_MS = 60000;
+let workerConfigCache = { data: null, fetchedAt: 0 };
+const WORKER_CONFIG_CACHE_TTL_MS = 30000;
+let contentPolicyCache = { data: null, fetchedAt: 0 };
+const CONTENT_POLICY_CACHE_TTL_MS = 30000;
 const BLOCKED_DOMAINS_CACHE_TTL = 30000;
 const ADULT_BLOCKLIST_URL = 'https://raw.githubusercontent.com/blocklistproject/Lists/master/porn.txt';
 const ADULT_BLOCKLIST_CACHE_TTL = 6 * 60 * 60 * 1000;
@@ -744,17 +750,24 @@ const WorkerConfigService = {
     };
   },
   async loadSettings(env) {
+    const now = Date.now();
+    if (workerConfigCache.data && (now - workerConfigCache.fetchedAt) < WORKER_CONFIG_CACHE_TTL_MS) {
+      return workerConfigCache.data;
+    }
+    let result = this.getDefaults();
     try {
       const row = await env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(WORKER_CONFIG_KEY).first();
       if (row && row.value) {
-        return this.normalize(JSON.parse(row.value));
+        result = this.normalize(JSON.parse(row.value));
       }
     } catch (e) {}
-    return this.getDefaults();
+    workerConfigCache = { data: result, fetchedAt: now };
+    return result;
   },
   async saveSettings(env, data) {
     const normalized = this.normalize(data);
     await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").bind(WORKER_CONFIG_KEY, JSON.stringify(normalized)).run();
+    workerConfigCache = { data: normalized, fetchedAt: Date.now() };
     return normalized;
   },
   async getStatusPath(env) {
@@ -2209,6 +2222,7 @@ const Router = {
       try {
         try { await flushExpiredTraffic(env); } catch (e) {}
         await env.DB.prepare("DELETE FROM users").run();
+        systemUserCache = { user: null, fetchedAt: 0 };
         await ensureSystemUser(env.DB);
         await env.DB.prepare("DELETE FROM settings WHERE key != 'ADMIN'").run();
         await env.DB.prepare("DELETE FROM panel_logs").run();
@@ -2786,6 +2800,10 @@ function isIranDomain(hostname) {
 }
 const ContentPolicyService = {
   async getSettings(env) {
+    const now = Date.now();
+    if (contentPolicyCache.data && (now - contentPolicyCache.fetchedAt) < CONTENT_POLICY_CACHE_TTL_MS) {
+      return contentPolicyCache.data;
+    }
     const result = { adultBlockEnabled: false };
     try {
       const { results } = await env.DB.prepare(
@@ -2795,11 +2813,12 @@ const ContentPolicyService = {
         if (row.key === 'adult_block_enabled') result.adultBlockEnabled = row.value === '1';
       }
     } catch (e) {}
+    contentPolicyCache = { data: result, fetchedAt: now };
     return result;
   },
   async saveSettings(env, data) {
-    await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('adult_block_enabled', ?)")
-      .bind(data.adultBlockEnabled ? '1' : '0').run();
+    await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").bind('adult_block_enabled', data.adultBlockEnabled ? '1' : '0').run();
+    contentPolicyCache = { data: { adultBlockEnabled: !!data.adultBlockEnabled }, fetchedAt: Date.now() };
   },
   async getAdultBlocklist() {
     const now = Date.now();
@@ -3395,12 +3414,17 @@ function isSystemUser(user) {
   return user.is_system === 1 || user.username === SYSTEM_USER_LABEL;
 }
 async function ensureSystemUser(db) {
+  const now = Date.now();
+  if (systemUserCache.user && (now - systemUserCache.fetchedAt) < SYSTEM_USER_CACHE_TTL_MS) {
+    return systemUserCache.user;
+  }
   let user = await db.prepare("SELECT * FROM users WHERE is_system = 1 OR username = ? LIMIT 1").bind(SYSTEM_USER_LABEL).first();
   if (user) {
     if (user.is_system !== 1 || user.is_saved !== 1 || user.limit_gb != null || user.expiry_days != null || user.max_requests != null || user.max_requests_daily != null) {
       await db.prepare("UPDATE users SET is_system = 1, is_saved = 1, limit_gb = NULL, expiry_days = NULL, max_requests = NULL, max_requests_daily = NULL WHERE username = ?").bind(user.username).run();
       user = await db.prepare("SELECT * FROM users WHERE username = ?").bind(user.username).first();
     }
+    systemUserCache = { user, fetchedAt: now };
     return user;
   }
   const uuid = crypto.randomUUID();
@@ -3410,7 +3434,9 @@ async function ensureSystemUser(db) {
     SYSTEM_USER_LABEL, uuid, null, null, null, atob('dmxlc3M='), 'on', 443, 'chrome', null, null
   ).run();
   await StatusUrlService.assignStatusSlug(db, SYSTEM_USER_LABEL);
-  return db.prepare("SELECT * FROM users WHERE username = ?").bind(SYSTEM_USER_LABEL).first();
+  user = await db.prepare("SELECT * FROM users WHERE username = ?").bind(SYSTEM_USER_LABEL).first();
+  systemUserCache = { user, fetchedAt: now };
+  return user;
 }
 async function getWorkerRequestStats(env) {
   let cfReqs = { today: 0, total: 0, pending: pendingRequestCount };
