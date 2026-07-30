@@ -27,21 +27,18 @@ const userRequestLastFlush = new Map();
 // --- Tunables ---
 const dnsAnswerCache_TTL = 5 * 60 * 1000;
 const DOH_RESOLVER_URL = "https://cloudflare-dns.com/dns-query";
-const UPSTREAM_BUNDLE_TARGET_BYTES = 16 * 1024;
+const UPSTREAM_BUNDLE_TARGET_BYTES = 32 * 1024;
 const UPSTREAM_QUEUE_MAX_BYTES = 16 * 1024 * 1024;
 const UPSTREAM_QUEUE_MAX_ITEMS = 4096;
 const DOWNSTREAM_CHUNK_BYTES = 32 * 1024;
 const DOWNSTREAM_CHUNK_TAIL_MIN = 512;
 const DOWNSTREAM_FLUSH_DELAY_MS = 1;
-const TCP_DIAL_CONCURRENCY = 2;
+const TCP_DIAL_CONCURRENCY = 3;
 const RACE_DIAL_ENABLED = true;
 
 // --- Fallback CDN proxy pool (used when no admin-configured proxy exists) ---
 const FALLBACK_PROXY_HOSTS = [
-  'proxyip.fxxk.dedyn.io',
-  'workers.cloudflare.cyou',
-  'proxyip.jp.fxxk.dedyn.io',
-  'proxyip.sg.fxxk.dedyn.io'
+  'proxyip.cmliussss.net'
 ];
 
 // --- Remote resource endpoints (replace with your own hosted JSON) ---
@@ -841,11 +838,14 @@ const WorkerConfigService = {
     const fragment = tlsVal === 'tls' ? this.getTlsFragmentParam(cfg) : '';
     return '?' + tc.pathField + '=' + pathEnc + '&security=' + tlsVal + '&encryption=none' + insecure + '&' + tc.hostField + '=' + host + '&fp=' + resolvedFp + '&type=' + transportType + '&sni=' + host + fragment;
   },
-  buildNodeLink(cfg, user, ip, portStr, fp, remark, protoOverride, linkHost) {
+  buildNodeLink(cfg, user, ip, portStr, fp, remark, protoOverride, linkHost, proxyIpOverride) {
     const host = linkHost || ip;
     const protocol = protoOverride || cfg.protocolType || 'vless';
     const resolvedFp = this.resolveFingerprint(fp);
-    const pathVal = this.resolveTransportPathValue(cfg);
+    let pathVal = this.resolveTransportPathValue(cfg);
+    if (proxyIpOverride) {
+      pathVal += (pathVal.includes('?') ? '&' : '?') + 'proxyip=' + encodeURIComponent(proxyIpOverride);
+    }
     const tc = this.getTransportConfig(cfg);
     const ech = this.getEchParam(cfg);
     const tlsPorts = ['443', '2053', '2083', '2087', '2096', '8443'];
@@ -900,7 +900,8 @@ function buildRemarkVariables(user, now = Date.now(), extra = {}) {
     total: totalStr,
     expiry: user?.expiry_days != null ? String(user.expiry_days) : '∞',
     port: extra.port != null ? String(extra.port) : '',
-    proxyip: extra.proxyip != null ? String(extra.proxyip) : ''
+    proxyip: extra.proxyip != null ? String(extra.proxyip) : '',
+    flag: extra.flag != null ? String(extra.flag) : ''
   };
 }
 function applyRemarkTemplate(template, user, now = Date.now(), extra = {}) {
@@ -992,11 +993,30 @@ const CdnProxyService = {
     const v = String(value || '').trim().toLowerCase();
     return !v || v === 'auto';
   },
+  stripProxyCountryTag(raw) {
+    const m = String(raw || '').match(/^(.*?)#([A-Za-z]{2})\s*$/);
+    return m ? m[1].trim() : String(raw || '').trim();
+  },
+  parseProxyEntryMeta(raw) {
+    const str = String(raw || '').trim();
+    const m = str.match(/^(.*?)#([A-Za-z]{2})\s*$/);
+    return m ? { address: m[1].trim(), cc: m[2].toUpperCase() } : { address: str, cc: '' };
+  },
   getEffectiveProxyList(settings) {
     const list = settings?.proxy_ips?.length
       ? settings.proxy_ips.slice()
       : (settings?.proxy_ip ? [settings.proxy_ip] : []);
-    return list.map(v => String(v).trim()).filter(v => v && !this.isAutoProxy(v));
+    return list
+      .map(v => this.stripProxyCountryTag(v))
+      .filter(v => v && !this.isAutoProxy(v));
+  },
+  getEffectiveProxyListWithMeta(settings) {
+    const list = settings?.proxy_ips?.length
+      ? settings.proxy_ips.slice()
+      : (settings?.proxy_ip ? [settings.proxy_ip] : []);
+    return list
+      .map(v => this.parseProxyEntryMeta(v))
+      .filter(entry => entry.address && !this.isAutoProxy(entry.address));
   },
   async loadSettings(env) {
     const defaults = {
@@ -2719,17 +2739,25 @@ function formatNewUserLogDetails(username, body) {
   if (body.max_requests_daily) parts.push('ریکوئست روزانه: ' + body.max_requests_daily);
   return parts.join(' | ');
 }
+let allServicesOffCache = { value: false, fetchedAt: 0 };
+const ALL_SERVICES_OFF_CACHE_TTL = 30000;
 const PanelKillService = {
   async isAllServicesOff(env) {
+    const now = Date.now();
+    if (now - allServicesOffCache.fetchedAt < ALL_SERVICES_OFF_CACHE_TTL) {
+      return allServicesOffCache.value;
+    }
     try {
       const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'all_services_off'").first();
-      return row?.value === '1' || row?.value === 'true';
+      allServicesOffCache = { value: row?.value === '1' || row?.value === 'true', fetchedAt: now };
+      return allServicesOffCache.value;
     } catch (e) {
-      return false;
+      return allServicesOffCache.value;
     }
   },
   async setAllServicesOff(env, enabled) {
     await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('all_services_off', ?)").bind(enabled ? '1' : '0').run();
+    allServicesOffCache = { value: enabled, fetchedAt: Date.now() };
   }
 };
 const DomainBlockService = {
@@ -3982,10 +4010,9 @@ function isSubConverterRequest(request, url, ua) {
 }
 const SubscriptionService = {
   async buildMixedLinks(user, host, env, workerConfig) {
-    const proxySettingsForRemark = await CdnProxyService.loadSettings(env);
-    const proxyIpForRemark = CdnProxyService.getEffectiveProxyList(proxySettingsForRemark)[0]
-      || (proxySettingsForRemark.envProxyIPs && proxySettingsForRemark.envProxyIPs[0])
-      || 'auto';
+    const proxySettingsBase = await CdnProxyService.loadSettings(env);
+    const proxySettingsForRemark = CdnProxyService.buildUserSettings(proxySettingsBase, user);
+    const proxyEntries = CdnProxyService.getEffectiveProxyListWithMeta(proxySettingsForRemark);
     const ips = resolveConfigIps(host, user.ips);
     const ports = String(user.port || '443').split(',').map(p => p.trim()).filter(p => p.length > 0);
     const fp = user.fingerprint || workerConfig.fingerprint || WorkerConfigService.getDefaults().fingerprint;
@@ -4001,15 +4028,20 @@ const SubscriptionService = {
     links.push(buildFakeLink(secondRemark));
     if (!inactive) {
       let nodeIndex = 0;
+      const proxyList = proxyEntries.length ? proxyEntries : [null];
       ips.forEach((ip) => {
         ports.forEach((portStr) => {
-          const remark = applyRemarkTemplate(workerConfig.nodeRemarkTemplate, user, Date.now(), { port: portStr, proxyip: proxyIpForRemark });
-          let proto = workerConfig.protocolType || 'vless';
-          if (proto === 'mixed') {
-            proto = ['vless', 'trojan', 'ss'][nodeIndex % 3];
-          }
-          links.push(WorkerConfigService.buildNodeLink(workerConfig, user, ip, portStr, fp, remark, proto, host));
-          nodeIndex++;
+          proxyList.forEach((proxyEntry) => {
+            const flag = proxyEntry ? flagEmojiFromCountryCode(proxyEntry.cc) : '';
+            const proxyipForRemark = proxyEntry ? proxyEntry.address : (proxyEntries[0]?.address || 'auto');
+            const remark = applyRemarkTemplate(workerConfig.nodeRemarkTemplate, user, Date.now(), { port: portStr, proxyip: proxyipForRemark, flag });
+            let proto = workerConfig.protocolType || 'vless';
+            if (proto === 'mixed') {
+              proto = ['vless', 'trojan', 'ss'][nodeIndex % 3];
+            }
+            links.push(WorkerConfigService.buildNodeLink(workerConfig, user, ip, portStr, fp, remark, proto, host, proxyEntry ? proxyEntry.address : null));
+            nodeIndex++;
+          });
         });
       });
     }
@@ -4556,6 +4588,16 @@ function isIPv4(value) {
   const parts = String(value || '').split('.');
   return parts.length === 4 && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
 }
+function flagEmojiFromCountryCode(cc) {
+  const code = String(cc || '').trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(code)) return '';
+  const codePoints = code.split('').map(ch => 127397 + ch.charCodeAt(0));
+  try {
+    return String.fromCodePoint(...codePoints);
+  } catch (e) {
+    return '';
+  }
+}
 function stripIPv6Brackets(hostname = '') {
   const host = String(hostname || '').trim();
   return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
@@ -5034,7 +5076,7 @@ async function buildRaceCandidates(address, port) {
   if (ipList.length === 0) return null;
   return ipList.map((hostname, attempt) => ({ hostname, port, attempt, resolvedFrom: address }));
 }
-async function openTcpConnection(host, port, timeoutMs = 1000) {
+async function openTcpConnection(host, port, timeoutMs = 1500) {
   const connectFn = await loadTcpConnect();
   const socket = connectFn({ hostname: host, port });
   await Promise.race([
@@ -5188,9 +5230,11 @@ async function connectProxyCDN(proxyIP, targetHost, targetPort, uuid, enableFall
     }
   }
   if (enableFallback) {
-    return connectDirect(CDN_PROXY_TP_DOMAIN, 1, initialData);
-  }
-  throw new Error('All CDN proxy connections failed');
+    try {
+      return await connectDirect(targetHost, targetPort, initialData);
+    } catch (e) {}
+   }
+   throw new Error('All CDN proxy connections failed');
 }
 async function connectDirect(address, port, initialData = null) {
   const raceCandidates = await buildRaceCandidates(address, port);
@@ -5200,7 +5244,7 @@ async function connectDirect(address, port, initialData = null) {
     const socket = connectFn({ hostname: host, port: prt });
     await Promise.race([
       socket.opened,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 1000))
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500))
     ]);
     return socket;
   };
@@ -8989,8 +9033,9 @@ Commercial support is available at
                 </div>
                 <div class="adm-cdn-sec" id="cdn-sec-proxyip">
                     <div class="adm-cdn-field">
-                        <label for="cdn-proxyip-input" data-i18n="cdn_proxyip_label">آدرس PROXYIP</label>
-                        <input type="text" id="cdn-proxyip-input" dir="ltr" placeholder="auto" class="admin-input w-full px-3 py-2.5 text-xs font-mono">
+                        <label for="cdn-proxyip-input" data-i18n="cdn_proxyip_label">آدرس PROXYIP (هر خط یک پروکسی)</label>
+                        <textarea id="cdn-proxyip-input" dir="ltr" rows="4" placeholder="auto&#10;1.2.3.4#DE&#10;5.6.7.8:443#FR" class="admin-input w-full px-3 py-2.5 text-xs font-mono"></textarea>
+                        <p class="adm-cdn-field-hint">هر خط = یک لوکیشن. اگه می‌خوای پرچم کشورش هم توی اسم کانفیگ بیاد، انتهای اون خط بنویس <code>#کدکشور</code> (مثال: <code>1.2.3.4#DE</code> یا <code>5.6.7.8:2053#US</code>)</p>
                     </div>
                 </div>
                 <div class="adm-ip-scanner-actions" style="margin-top:0.85rem">
@@ -9150,6 +9195,7 @@ Commercial support is available at
                 <div><code>{expiry}</code> — <span data-i18n="wc_var_expiry">کل مدت اعتبار به روز (∞ یعنی نامحدود)</span></div>
                 <div><code>{port}</code> — <span data-i18n="wc_var_port">پورتی که این کانفیگ خاص روی آن ساخته شده</span></div>
                 <div><code>{proxyip}</code> — <span data-i18n="wc_var_proxyip">آدرس Proxy IP فعلیِ تنظیم‌شده در بخش «پروکسی CDN»</span></div>
+                <div><code>{flag}</code> — پرچم کشوری که برای این پروکسی مشخص کردی (فرمت #کدکشور جلوی آی‌پی)</div>
             </div>
         </div>
         <div>
