@@ -25,7 +25,7 @@ const userRequestPending = new Map();
 const userRequestLastFlush = new Map();
 
 // --- Tunables ---
-const dnsAnswerCache_TTL_MS = 5 * 60 * 1000;
+const dnsAnswerCache_TTL = 5 * 60 * 1000;
 const DOH_RESOLVER_URL = "https://cloudflare-dns.com/dns-query";
 const UPSTREAM_BUNDLE_TARGET_BYTES = 16 * 1024;
 const UPSTREAM_QUEUE_MAX_BYTES = 16 * 1024 * 1024;
