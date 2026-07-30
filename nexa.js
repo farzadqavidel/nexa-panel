@@ -9035,7 +9035,7 @@ Commercial support is available at
                     <div class="adm-cdn-field">
                         <label for="cdn-proxyip-input" data-i18n="cdn_proxyip_label">آدرس PROXYIP (هر خط یک پروکسی)</label>
                         <textarea id="cdn-proxyip-input" dir="ltr" rows="4" placeholder="auto&#10;1.2.3.4#DE&#10;5.6.7.8:443#FR" class="admin-input w-full px-3 py-2.5 text-xs font-mono"></textarea>
-                        <p class="adm-cdn-field-hint">هر خط = یک لوکیشن. اگه می‌خوای پرچم کشورش هم توی اسم کانفیگ بیاد، انتهای اون خط بنویس <code>#کدکشور</code> (مثال: <code>1.2.3.4#DE</code> یا <code>5.6.7.8:2053#US</code>)</p>
+                        <p class="adm-cdn-field-hint" data-i18n-html="cdn_proxyip_hint">هر خط = یک لوکیشن. اگه می‌خوای پرچم کشورش هم توی اسم کانفیگ بیاد، انتهای اون خط بنویس <code>#کدکشور</code> (مثال: <code>1.2.3.4#DE</code> یا <code>5.6.7.8:2053#US</code>)</p>
                     </div>
                 </div>
                 <div class="adm-ip-scanner-actions" style="margin-top:0.85rem">
@@ -9159,7 +9159,7 @@ Commercial support is available at
                 <p class="text-xs mt-1.5" style="color: var(--admin-muted)" data-i18n="wc_path_empty_hint">خالی = پیش‌فرض</p>
             </div>
             <div>
-                <label class="block text-sm font-medium mb-1.5" style="color: var(--admin-muted)" data-i18n="wc_status_page_path_label">آدرس صفحه وضعیت</label>
+                <label class="block text-sm font-medium mb-1.5" style="color: var(--admin-muted)" data-i18n="wc_status_path_label">آدرس صفحه وضعیت</label>
                 <input type="text" id="wc-status-page-path" dir="ltr" class="admin-input w-full px-3 py-2.5 text-sm font-mono">
                 <p class="text-xs mt-1.5" style="color: var(--admin-muted)" data-i18n="wc_path_empty_hint">خالی = پیش‌فرض</p>
             </div>
@@ -9195,7 +9195,7 @@ Commercial support is available at
                 <div><code>{expiry}</code> — <span data-i18n="wc_var_expiry">کل مدت اعتبار به روز (∞ یعنی نامحدود)</span></div>
                 <div><code>{port}</code> — <span data-i18n="wc_var_port">پورتی که این کانفیگ خاص روی آن ساخته شده</span></div>
                 <div><code>{proxyip}</code> — <span data-i18n="wc_var_proxyip">آدرس Proxy IP فعلیِ تنظیم‌شده در بخش «پروکسی CDN»</span></div>
-                <div><code>{flag}</code> — پرچم کشوری که برای این پروکسی مشخص کردی (فرمت #کدکشور جلوی آی‌پی)</div>
+                <div><code>{flag}</code> — <span data-i18n="wc_var_flag">پرچم کشوری که برای این پروکسی مشخص کردی (فرمت #کدکشور جلوی آی‌پی)</span></div>
             </div>
         </div>
         <div>
@@ -10368,6 +10368,7 @@ Commercial support is available at
           cdn_access_desc:'از بخش یافتن پروکسی میتوانید پروکسی ایپی مد نظر خود را دریافت کنید.',
           cdn_mode_label:'حالت',
           cdn_proxyip_label:'آدرس PROXYIP',
+          cdn_proxyip_hint:'هر خط = یک لوکیشن. اگه می‌خوای پرچم کشورش هم توی اسم کانفیگ بیاد، انتهای اون خط بنویس <code>#کدکشور</code> (مثال: <code>1.2.3.4#DE</code> یا <code>5.6.7.8:2053#US</code>)',
           cdn_chain_label:'آدرس پروکسی',
           cdn_chain_hint:'هر پروکسی در یک خط. یکی = IP ثابت؛ دو تا سه = چرخش و جایگزینی خودکار.',
           cdn_rotate_label:'چرخش خودکار',
@@ -10743,6 +10744,7 @@ Commercial support is available at
           wc_var_expiry:'کل مدت اعتبار به روز (∞ یعنی نامحدود)',
           wc_var_port:'پورتی که این کانفیگ خاص روی آن ساخته شده',
           wc_var_proxyip:'آدرس Proxy IP فعلیِ تنظیم‌شده در بخش «پروکسی CDN»',
+          wc_var_flag:'پرچم کشوری که برای این پروکسی مشخص کردی (فرمت #کدکشور جلوی آی‌پی)',
           adult_block_title:'مسدودسازی محتوای بزرگسال',
           adult_block_label:'فیلتر کردن محتوای بزرگ سال (+18)',
           adult_block_save:'ذخیره مسدودسازی بزرگسال',
@@ -10892,6 +10894,7 @@ Commercial support is available at
           cdn_access_desc:'You can get the proxy IP of your choice from the Find Proxy section.',
           cdn_mode_label:'Mode',
           cdn_proxyip_label:'PROXYIP address',
+          cdn_proxyip_hint:'One line = one location. To show a country flag in the config name, add <code>#COUNTRYCODE</code> at the end of the line (e.g. <code>1.2.3.4#DE</code> or <code>5.6.7.8:2053#US</code>)',
           cdn_chain_label:'Proxy address(es)',
           cdn_chain_hint:'One proxy per line. One = fixed IP; two-three = auto rotation and failover.',
           cdn_rotate_label:'Auto-rotate',
@@ -11267,6 +11270,7 @@ Commercial support is available at
           wc_var_expiry:'Total validity in days (∞ = unlimited)',
           wc_var_port:'The port this specific config is built on',
           wc_var_proxyip:'Current Proxy IP address configured in "CDN Proxy" section',
+          wc_var_flag:'Country flag set for this proxy (format #COUNTRYCODE after the IP)',
           adult_block_title:'Adult content blocking',
           adult_block_label:'Filter adult content (+18)',
           adult_block_save:'Save adult blocking',
@@ -11488,7 +11492,12 @@ Commercial support is available at
             if (descEl) descEl.textContent = meta.desc[lang] || meta.desc.fa;
         }
         function setAdminLang(lang) {
+            const prevLang = localStorage.getItem('nexa-admin-lang') || 'fa';
             localStorage.setItem('nexa-admin-lang', lang);
+            if (lang !== prevLang) {
+                location.reload();
+                return;
+            }
             const faBtn = document.getElementById('lang-fa');
             const enBtn = document.getElementById('lang-en');
             if (faBtn) faBtn.classList.toggle('active', lang === 'fa');
@@ -11503,6 +11512,7 @@ Commercial support is available at
             updateAdminPageHeader(activeNav ? activeNav.dataset.section : 'dashboard', lang);
             updateTgNotifyUI();
             updateBulkToolbar();
+            if (document.getElementById('section-settings')?.classList.contains('active') && typeof loadWorkerConfigForm === 'function') loadWorkerConfigForm();
             if (window.allUsers) filterAndRenderUsers();
             const refreshBtn = document.getElementById('dash-refresh-btn');
             if (refreshBtn && !refreshBtn.disabled) refreshBtn.textContent = adminT('refresh');
@@ -13336,7 +13346,12 @@ function closeUsageWarning() {
                 const cfg = window.panelWorkerConfig;
                 const defs = workerConfigDefaults;
                 const firstRemarkEl = document.getElementById('wc-first-remark');
-                if (firstRemarkEl) firstRemarkEl.value = data.lockedFirstRemark || buildFirstRemark();
+                  if (firstRemarkEl) {
+                      const _lang = localStorage.getItem('nexa-admin-lang') || 'fa';
+                      firstRemarkEl.value = _lang === 'en'
+                          ? '❌ This service is completely free ❌ '
+                          : (data.lockedFirstRemark || buildFirstRemark());
+                  }
                 const protocolEl = document.getElementById('wc-protocol-type');
                 if (protocolEl) protocolEl.value = cfg.protocolType || defs.protocolType || 'vless';
                 const transportEl = document.getElementById('wc-transport-protocol');
