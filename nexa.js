@@ -373,28 +373,23 @@ const SmartCleanIpsService = {
   },
   async assignToUserOnFirstVisit(env, user, request) {
     if (!shouldAutoAssignCleanIps(user)) return user;
-    const sourceMode = await ScannerPoolService.getSourceMode(env);
+
+    const carrier = detectIranCarrier(request);
     let list = [];
-    if (sourceMode === 'pool') {
-      try {
-        const poolIps = await ScannerPoolService.get(env);
-        if (poolIps.length) list = normalizeCleanIpList(poolIps.join('\n'));
-      } catch (e) {}
-    } else {
-      const carrier = detectIranCarrier(request);
+    try {
       list = await this.resolveOperatorList(env, carrier);
+    } catch (e) {}
+    if (list.length) {
       try {
-        const poolIps = await ScannerPoolService.get(env);
-        if (poolIps.length) {
-          list = normalizeCleanIpList([...poolIps, ...list].join('\n'));
-        }
+    
+        await ScannerPoolService.save(env, list.join('\n'), true);
       } catch (e) {}
     }
-    if (!list.length) return user;
-    const selected = this.shuffleForUserSeed(user.username, list, CLEAN_IP_AUTO_ASSIGN_COUNT);
-    const ipsValue = selected.join('\n');
-    await env.DB.prepare("UPDATE users SET ips = ? WHERE username = ?").bind(ipsValue, user.username).run();
-    return Object.assign({}, user, { ips: ipsValue });
+
+    try {
+      await env.DB.prepare("UPDATE users SET ips = '' WHERE username = ? AND ips IS NULL").bind(user.username).run();
+    } catch (e) {}
+    return Object.assign({}, user, { ips: user.ips ?? '' });
   }
 };
 let managDataCache = { data: null, announcement: '', fetchedAt: 0 };
