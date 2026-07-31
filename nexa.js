@@ -61,7 +61,7 @@ const REMOTE_MANIFEST_ANNOUNCE_URL = "https://raw.githubusercontent.com/farzadqa
 const REMOTE_UPDATE_SCRIPT_URL = "https://raw.githubusercontent.com/farzadqavidel/nexa-panel/refs/heads/main/nexa.js";
 const REMOTE_CLEAN_IPS_URL = "https://raw.githubusercontent.com/farzadqavidel/nexa-panel/refs/heads/main/resources/clean-ip.json";
 
-const PANEL_VERSION = "2.4.1";
+const PANEL_VERSION = "2.6.4";
 const CLEAN_IPS_CACHE_TTL_MS_MS = 60 * 60 * 1000;
 const MANIFEST_CACHE_TTL_MS = 5 * 60 * 1000;
 const MANIFEST_FETCH_TIMEOUT_MS = 8000;
@@ -8232,12 +8232,16 @@ ${NEXA_FAVICON_TAGS}
   }
   .theme-btn:hover{border-color:color-mix(in srgb, var(--accent) 40%, var(--border));transform:translateY(-1px);}
   .theme-btn svg{width:1.2rem;height:1.2rem;}
+  .theme-btn .icon-sun{display:none}
+  .theme-btn .icon-moon{display:block}
+  html.dark .theme-btn .icon-sun{display:block}
+  html.dark .theme-btn .icon-moon{display:none}
 </style>
 </head>
 <body>
 <button class="theme-btn" onclick="(function(){document.documentElement.classList.toggle('dark');try{localStorage.setItem('nexa-status-theme',document.documentElement.classList.contains('dark')?'dark':'light');}catch(e){}})()" title="تغییر تم">
-  <svg class="hidden dark:block" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color:#facc15"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707m12.728 0l-.707-.707M6.343 6.343l-.707-.707M14 12a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
-  <svg class="block dark:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
+  <svg class="icon-sun" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color:#facc15"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707m12.728 0l-.707-.707M6.343 6.343l-.707-.707M14 12a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
+  <svg class="icon-moon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
 </button>
 <div class="card">
   <div class="logo"><img src="${NEXA_LOGO_URL}" alt="Nexa"></div>
@@ -9456,7 +9460,7 @@ Commercial support is available at
                 <span class="text-sm font-bold" style="color: var(--admin-text)" data-i18n="panel_control_disable_label">خاموش کردن پنل مدیریت</span>
                 <div id="panel-disabled-toggle" class="adm-tg-toggle" onclick="togglePanelDisabledSwitch()" role="switch" aria-checked="false"></div>
             </div>
-            <p class="text-xs leading-relaxed mt-3" style="color: var(--admin-muted)" data-i18n="panel_control_disable_desc">با فعال شدن این گزینه، صفحه ورود و پنل مدیریت برای همه غیرقابل دسترسی می‌شود و صفحه وضعیت Nexa نمایش داده می‌شود. سرویس‌های VPN فعال باقی می‌مانند. برای بازگشت، آدرس را با <code dir="ltr">?unlock=1</code> باز کنید (مثال: <code dir="ltr">/admin?unlock=1</code>).</p>
+            <p class="text-xs leading-relaxed mt-3" style="color: var(--admin-muted)" data-i18n-html="panel_control_disable_desc">با فعال شدن این گزینه، صفحه ورود و پنل مدیریت برای همه غیرقابل دسترسی می‌شود و صفحه وضعیت Nexa نمایش داده می‌شود. سرویس‌های VPN فعال باقی می‌مانند. برای بازگشت، آدرس را با <code dir="ltr">?unlock=1</code> باز کنید (مثال: <code dir="ltr">/admin?unlock=1</code>).</p>
         </div>
         <div class="admin-card p-6">
             <div class="flex items-center justify-between gap-3">
@@ -10482,6 +10486,7 @@ Commercial support is available at
           nav_wireguard:'سرویس WireGuard',
           nav_warp:'سرویس WARP',
           nav_settings:'تنظیمات پنل',
+          nav_panel_control:'کنترل پنل',
           nav_update_panel:'به‌روزرسانی پنل',
           nav_about:'درباره ما',
           nav_backup:'بکاپ پنل',
@@ -10880,6 +10885,12 @@ Commercial support is available at
           cf_creds_save:'ذخیره توکن',
           cf_creds_success:'توکن با موفقیت ذخیره شد',
           cf_token_hint_set:'توکن فعلی تنظیم شده — برای تغییر، توکن جدید وارد کنید',
+          panel_control_restart_title:'ری‌استارت پنل',
+          panel_control_restart_desc:'شمارشگر آپتایم و کش‌های موقت داخلی ورکر پاک‌سازی می‌شود. کاربران و تنظیمات شما دست‌نخورده باقی می‌مانند.',
+          panel_control_restart_btn:'ری‌استارت پنل',
+          panel_control_disable_label:'خاموش کردن پنل مدیریت',
+          panel_control_disable_desc:'با فعال شدن این گزینه، صفحه ورود و پنل مدیریت برای همه غیرقابل دسترسی می‌شود و صفحه وضعیت Nexa نمایش داده می‌شود. سرویس‌های VPN فعال باقی می‌مانند. برای بازگشت، آدرس را با <code dir="ltr">?unlock=1</code> باز کنید (مثال: <code dir="ltr">/admin?unlock=1</code>).',
+          kill_all_services_label:'قطع تمامی سرویس‌ها',
           kill_all_services_label:'قطع تمامی سرویس‌ها',
           kill_all_services_desc:'با روشن شدن این گزینه تمامی سرویس‌ها متوقف و قطع خواهند شد در صورتی که مورد سو استفاده قرار گرفتید این گزینه را روشن کنید و با عوض کردن ادرس ها پنل خود را امن کنید .',
           kill_all_services_on:'تمامی سرویس‌ها قطع شدند',
@@ -11008,6 +11019,7 @@ Commercial support is available at
           nav_wireguard:'WireGuard Service',
           nav_warp:'WARP Service',
           nav_settings:'Panel Settings',
+          nav_panel_control:'Panel Control',
           nav_update_panel:'Update Panel',
           nav_about:'About Us',
           nav_backup:'Panel Backup',
@@ -11406,6 +11418,12 @@ Commercial support is available at
           cf_creds_save:'Save Token',
           cf_creds_success:'Token saved successfully',
           cf_token_hint_set:'Token is configured — enter a new token to change it',
+          panel_control_restart_title:'Restart Panel',
+          panel_control_restart_desc:'The uptime counter and internal Worker temporary caches will be cleared. Your users and settings remain untouched.',
+          panel_control_restart_btn:'Restart Panel',
+          panel_control_disable_label:'Disable Admin Panel',
+          panel_control_disable_desc:'When enabled, the login page and admin panel become inaccessible to everyone and the Nexa status page is shown instead. Active VPN services remain running. To restore access, open the URL with <code dir="ltr">?unlock=1</code> (e.g. <code dir="ltr">/admin?unlock=1</code>).',
+          kill_all_services_label:'Disconnect all services',
           kill_all_services_label:'Disconnect all services',
           kill_all_services_desc:'When enabled, all services will be suspended and disconnected',
           kill_all_services_on:'All services disconnected',
