@@ -60,7 +60,6 @@ const REMOTE_MANIFEST_DATA_URL = "https://raw.githubusercontent.com/farzadqavide
 const REMOTE_MANIFEST_ANNOUNCE_URL = "https://raw.githubusercontent.com/farzadqavidel/nexa-panel/refs/heads/main/resources/notice.json";
 const REMOTE_UPDATE_SCRIPT_URL = "https://raw.githubusercontent.com/farzadqavidel/nexa-panel/refs/heads/main/nexa.js";
 const REMOTE_CLEAN_IPS_URL = "https://raw.githubusercontent.com/farzadqavidel/nexa-panel/refs/heads/main/resources/clean-ip.json";
-const CAMOUFLAGE_TARGET_URL = "https://www.wikipedia.org";
 
 const PANEL_VERSION = "2.4.1";
 const CLEAN_IPS_CACHE_TTL_MS_MS = 60 * 60 * 1000;
@@ -239,10 +238,10 @@ const ScannerPoolService = {
   async getSourceMode(env) {
     try {
       const row = await env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(CLEAN_IP_SOURCE_KEY).first();
-      const mode = String(row?.value || 'smart').trim().toLowerCase();
-      return mode === 'pool' ? 'pool' : 'smart';
+      const mode = String(row?.value || 'pool').trim().toLowerCase();
+      return mode === 'smart' ? 'smart' : 'pool';
     } catch (e) {
-      return 'smart';
+      return 'pool';
     }
   },
   async setSourceMode(env, mode) {
@@ -1217,38 +1216,7 @@ const CdnProxyService = {
     return data;
   }
 };
-async function proxyCamouflageSite(request) {
-  const requestUrl = new URL(request.url);
-  const targetOrigin = new URL(CAMOUFLAGE_TARGET_URL);
-  const targetUrl = new URL(requestUrl.pathname + requestUrl.search, targetOrigin);
-  const proxyHeaders = new Headers();
-  for (const [key, value] of request.headers) {
-    const lowerKey = key.toLowerCase();
-    if (lowerKey === 'host' || lowerKey === 'cf-connecting-ip' || lowerKey === 'cf-ray' || lowerKey === 'cf-visitor' || lowerKey === 'x-forwarded-for' || lowerKey === 'x-real-ip') continue;
-    proxyHeaders.set(key, value);
-  }
-  proxyHeaders.set('Host', targetOrigin.host);
-  if (!proxyHeaders.has('Origin')) proxyHeaders.set('Origin', targetOrigin.origin);
-  if (!proxyHeaders.has('Referer')) proxyHeaders.set('Referer', targetOrigin.origin + '/');
-  const init = {
-    method: request.method,
-    headers: proxyHeaders,
-    redirect: 'follow'
-  };
-  if (request.method !== 'GET' && request.method !== 'HEAD' && request.method !== 'OPTIONS') {
-    init.body = request.body;
-  }
-  const response = await fetch(targetUrl.toString(), init);
-  const responseHeaders = new Headers(response.headers);
-  ['content-security-policy', 'content-security-policy-report-only', 'x-frame-options', 'strict-transport-security'].forEach((header) => {
-    responseHeaders.delete(header);
-  });
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: responseHeaders
-  });
-}
+
 export default {
   async fetch(request, env, ctx) {
     trackRequest(env, ctx);
@@ -1287,6 +1255,11 @@ export default {
       return await Router.handleSetupPage(request, env);
     }
     const adminPath = workerCfg.adminPagePath || WORKER_CONFIG_DEFAULTS.adminPagePath;
+    const panelIsDisabled = await PanelDisableService.isPanelDisabled(env);
+    const forceUnlock = url.searchParams.get('unlock') === '1';
+    if (panelIsDisabled && !forceUnlock && (url.pathname === '/login' || url.pathname === '/' + adminPath)) {
+      return await Router.handleStatusHome(env);
+    }
     if (url.pathname === '/login') {
       return Response.redirect(new URL('/' + adminPath, url.origin).href, 302);
     }
@@ -1306,13 +1279,7 @@ export default {
     if (!setupReady) {
       return Response.redirect(new URL('/setup', url.origin).href, 302);
     }
-    try {
-      return await proxyCamouflageSite(request);
-    } catch (e) {
-      return new Response(HTML_TEMPLATES.nginx, {
-        headers: { "Content-Type": "text/html; charset=utf-8" }
-      });
-    }
+    return await Router.handleStatusHome(env);
   },
   async scheduled(event, env, ctx) {
     await DbService.ensureSchema(env.DB);
@@ -1361,6 +1328,11 @@ const Router = {
         headers: { "Content-Type": "application/json; charset=utf-8" }
       });
     }
+  },
+  async handleStatusHome(env) {
+    const startedAt = await PanelUptimeService.getStartedAt(env);
+    const html = buildNexaStatusPage(startedAt);
+    return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
   },
   async handleSubscription(url, env, request, ctx, subPath) {
     const seg = subPath || WORKER_CONFIG_DEFAULTS.subPagePath;
@@ -2156,6 +2128,24 @@ const Router = {
         headers: { "Content-Type": "application/json; charset=utf-8" }
       });
     }
+    if (url.pathname === '/api/panel-disabled' && request.method === 'GET') {
+      const enabled = await PanelDisableService.isPanelDisabled(env);
+      return new Response(JSON.stringify({ enabled }), { headers: { "Content-Type": "application/json; charset=utf-8" } });
+    }
+    if (url.pathname === '/api/panel-disabled' && request.method === 'POST') {
+      const body = await request.json();
+      const enabled = !!body.enabled;
+      await PanelDisableService.setPanelDisabled(env, enabled);
+      await LogService.addLog(env, 'خاموش/روشن کردن پنل', enabled ? 'پنل مدیریت غیرفعال شد' : 'پنل مدیریت مجدداً فعال شد', getClientIp(request));
+      return new Response(JSON.stringify({ success: true, enabled }), { headers: { "Content-Type": "application/json; charset=utf-8" } });
+    }
+    if (url.pathname === '/api/panel-restart' && request.method === 'POST') {
+      const startedAt = await PanelUptimeService.reset(env);
+      trafficByteCache.clear(); activeConnCountByUser.clear(); lastActiveWriteAt.clear();
+      lastDbWriteAt.clear(); dbWriteLock.clear(); dnsAnswerCache.clear();
+      await LogService.addLog(env, 'ری‌استارت پنل', 'شمارشگر آپتایم و کش‌های موقت پاک‌سازی شد', getClientIp(request));
+      return new Response(JSON.stringify({ success: true, started_at: startedAt }), { headers: { "Content-Type": "application/json; charset=utf-8" } });
+    }
     if (url.pathname === '/api/telegram-notify' && request.method === 'POST') {
       const body = await request.json();
       await TelegramNotifyService.saveSettings(env, body);
@@ -2736,6 +2726,44 @@ function formatNewUserLogDetails(username, body) {
 }
 let allServicesOffCache = { value: false, fetchedAt: 0 };
 const ALL_SERVICES_OFF_CACHE_TTL = 30000;
+const PANEL_STARTED_AT_KEY = 'panel_started_at';
+const PanelUptimeService = {
+  async getStartedAt(env) {
+    try {
+      const row = await env.DB.prepare("SELECT value FROM settings WHERE key = ?").bind(PANEL_STARTED_AT_KEY).first();
+      if (row?.value) return parseInt(row.value, 10) || Date.now();
+      const now = Date.now();
+      await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").bind(PANEL_STARTED_AT_KEY, String(now)).run();
+      return now;
+    } catch (e) {
+      return Date.now();
+    }
+  },
+  async reset(env) {
+    const now = Date.now();
+    await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").bind(PANEL_STARTED_AT_KEY, String(now)).run();
+    return now;
+  }
+};
+let panelDisabledCache = { value: false, fetchedAt: 0 };
+const PANEL_DISABLED_CACHE_TTL = 30000;
+const PanelDisableService = {
+  async isPanelDisabled(env) {
+    const now = Date.now();
+    if (now - panelDisabledCache.fetchedAt < PANEL_DISABLED_CACHE_TTL) return panelDisabledCache.value;
+    try {
+      const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'panel_disabled'").first();
+      panelDisabledCache = { value: row?.value === '1', fetchedAt: now };
+      return panelDisabledCache.value;
+    } catch (e) {
+      return panelDisabledCache.value;
+    }
+  },
+  async setPanelDisabled(env, enabled) {
+    await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('panel_disabled', ?)").bind(enabled ? '1' : '0').run();
+    panelDisabledCache = { value: enabled, fetchedAt: Date.now() };
+  }
+};
 const PanelKillService = {
   async isAllServicesOff(env) {
     const now = Date.now();
@@ -8125,6 +8153,134 @@ function buildSetupHtml(status, options) {
 </body>
 </html>`;
 }
+function buildNexaStatusPage(startedAtMs) {
+  const started = Number(startedAtMs) || Date.now();
+  return `<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nexa</title>
+${NEXA_FAVICON_TAGS}
+<link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet">
+<style>
+  :root{
+    --bg:#f4f8f6;--bg2:#e8f2ed;--card:#fff;--card2:#eef5f1;--text:#111827;--muted:#64748b;
+    --accent:#3FB53A;--accent2:#1E8A2E;--border:#dfe8e4;--glow:rgba(63,181,58,0.28);
+  }
+  html.dark{
+    --bg:#0b0f0d;--bg2:#0f1512;--card:#131a17;--card2:#0f1512;--text:#e8ece9;--muted:#8b95a8;
+    --accent:#79E62A;--accent2:#3FB53A;--border:#22302a;--glow:rgba(121,230,42,0.22);
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;min-height:100vh;font-family:'Vazirmatn',sans-serif;color:var(--text);
+    display:flex;align-items:center;justify-content:center;transition:background .3s,color .3s;
+    background:
+      radial-gradient(ellipse 70% 55% at 15% 10%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 55%),
+      radial-gradient(ellipse 60% 50% at 90% 90%, color-mix(in srgb, var(--accent2) 8%, transparent), transparent 50%),
+      linear-gradient(155deg, var(--bg) 0%, var(--bg2) 100%);
+  }
+  .card{
+    max-width:30rem;width:100%;margin:1rem;padding:2.75rem 2.25rem;text-align:center;position:relative;
+    border-radius:1.75rem;
+    background: linear-gradient(160deg, var(--card) 0%, var(--card2) 100%);
+    border:1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+    box-shadow:
+      0 1px 0 color-mix(in srgb, #fff 25%, transparent) inset,
+      0 -20px 40px -30px color-mix(in srgb, var(--accent) 30%, transparent) inset,
+      0 24px 60px -18px rgba(0,0,0,.22),
+      0 8px 24px -12px var(--glow);
+    overflow:hidden;
+  }
+  .card::before{
+    content:'';position:absolute;inset-inline:0;top:0;height:3px;
+    background:linear-gradient(90deg, transparent, var(--accent), var(--accent2), transparent);
+    opacity:.85;
+  }
+  .logo{
+    width:5rem;height:5rem;margin:0 auto 1.35rem;border-radius:1.15rem;overflow:hidden;position:relative;
+    box-shadow:0 14px 30px -10px var(--glow), 0 2px 8px rgba(0,0,0,.1);
+    transform:translateZ(0);
+    animation:float 4s ease-in-out infinite;
+  }
+  @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+  .logo img{width:100%;height:100%;object-fit:contain;}
+  h1{font-size:1.5rem;font-weight:900;margin:0 0 .6rem;letter-spacing:.01em;}
+  .sub{font-size:.85rem;color:var(--muted);margin:0 0 .5rem;line-height:1.7;}
+  .dot{
+    display:inline-block;width:.55rem;height:.55rem;border-radius:9999px;
+    background:radial-gradient(circle at 30% 30%, #fff, var(--accent));
+    margin-inline-end:.45rem;box-shadow:0 0 12px var(--accent), 0 0 2px var(--accent);
+    animation:pulse 1.8s infinite;
+  }
+  @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.55;transform:scale(.85)}}
+  .uptime{
+    margin-top:1.85rem;padding-top:1.35rem;border-top:1px solid color-mix(in srgb, var(--accent) 15%, var(--border));
+    font-size:.8rem;color:var(--muted);
+  }
+  .uptime b{
+    color:var(--text);font-family:ui-monospace,monospace;display:block;margin-top:.5rem;font-size:1.15rem;
+    letter-spacing:.03em;
+    text-shadow:0 0 18px var(--glow);
+  }
+  .theme-btn{
+    position:fixed;top:1rem;left:1rem;width:2.5rem;height:2.5rem;border-radius:.85rem;
+    background:var(--card);border:1px solid var(--border);color:var(--muted);
+    display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .2s;
+    box-shadow:0 6px 16px -6px rgba(0,0,0,.15);
+  }
+  .theme-btn:hover{border-color:color-mix(in srgb, var(--accent) 40%, var(--border));transform:translateY(-1px);}
+  .theme-btn svg{width:1.2rem;height:1.2rem;}
+</style>
+</head>
+<body>
+<button class="theme-btn" onclick="(function(){document.documentElement.classList.toggle('dark');try{localStorage.setItem('nexa-status-theme',document.documentElement.classList.contains('dark')?'dark':'light');}catch(e){}})()" title="تغییر تم">
+  <svg class="hidden dark:block" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color:#facc15"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707m12.728 0l-.707-.707M6.343 6.343l-.707-.707M14 12a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
+  <svg class="block dark:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
+</button>
+<div class="card">
+  <div class="logo"><img src="${NEXA_LOGO_URL}" alt="Nexa"></div>
+  <h1><span class="dot"></span>Nexa</h1>
+  <p class="sub">نکسا در حال حاضر فعال است و به درستی کار می‌کند.</p>
+  <p class="sub" dir="ltr">Nexa is currently up and running.</p>
+  <div class="uptime">
+    مدت زمان روشن بودن پنل / Panel uptime
+    <b id="uptime-val">--</b>
+  </div>
+</div>
+<script>
+(function(){
+  try{
+    var t=localStorage.getItem('nexa-status-theme');
+    if(t==='dark'||(!t&&window.matchMedia('(prefers-color-scheme: dark)').matches)) document.documentElement.classList.add('dark');
+  }catch(e){}
+  try{
+    var isDarkInit = document.documentElement.classList.contains('dark');
+    var iconEl = document.getElementById('nexa-theme-icon');
+    if(iconEl){
+      iconEl.innerHTML = isDarkInit
+        ? '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707m12.728 0l-.707-.707M6.343 6.343l-.707-.707M14 12a2 2 0 11-4 0 2 2 0 014 0z"></path>'
+        : '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path>';
+    }
+  }catch(e){}
+  var started=${started};
+  function fmt(ms){
+    var s=Math.floor(ms/1000);
+    var d=Math.floor(s/86400); s%=86400;
+    var h=Math.floor(s/3600); s%=3600;
+    var m=Math.floor(s/60); s%=60;
+    var hh=(h<10?'0':'')+h, mm=(m<10?'0':'')+m, ss=(s<10?'0':'')+s;
+    return (d?d+' روز، ':'') + hh+':'+mm+':'+ss;
+  }
+  function tick(){ document.getElementById('uptime-val').textContent = fmt(Date.now()-started); }
+  tick();
+  setInterval(tick, 1000);
+})();
+</script>
+</body>
+</html>`;
+}
 const HTML_TEMPLATES = {
   nginx: `<!DOCTYPE html>
 <html>
@@ -8575,6 +8731,10 @@ Commercial support is available at
                 <span data-i18n="nav_settings">تنظیمات پنل</span>
                 <span id="adm-nav-update-badge" class="adm-nav-update-badge">!</span>
             </button>
+            <button type="button" data-section="panel-control" class="adm-nav-item w-full" onclick="switchAdminSection('panel-control')">
+                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v9m6.364-6.364a9 9 0 11-12.728 0"></path></svg>
+                <span data-i18n="nav_panel_control">کنترل پنل</span>
+            </button>
             <button type="button" data-section="about" class="adm-nav-item w-full" onclick="switchAdminSection('about')">
                 <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                 <span data-i18n="nav_about">درباره ما</span>
@@ -8941,13 +9101,9 @@ Commercial support is available at
             <h3 class="adm-ip-scanner-title" data-i18n="nav_ip_scanner">اسکنر IP تمیز</h3>
             <p class="adm-ip-scanner-sub" data-i18n="ip_scanner_desc">سریع‌ترین آی‌پی‌های تمیز کلودفلر را برای شبکه‌تان پیدا کنید</p>
             <div class="adm-ip-scanner-fields">
-                <div class="adm-ip-scanner-field">
+                <div class="adm-ip-scanner-field" style="flex:1 1 100%">
                     <label for="ip-scan-total" data-i18n="ip_scan_total">تعداد IP تست</label>
                     <input id="ip-scan-total" type="number" min="20" max="400" value="140">
-                </div>
-                <div class="adm-ip-scanner-field">
-                    <label for="ip-scan-keep" data-i18n="ip_scan_keep">انتخاب بهترین ایپی </label>
-                    <input id="ip-scan-keep" type="number" min="1" max="30" value="8">
                 </div>
             </div>
             <div class="adm-ip-scanner-ports">
@@ -8981,12 +9137,12 @@ Commercial support is available at
                 <span class="adm-ip-scanner-section-count" id="ip-pool-count"></span>
             </div>
             <div class="adm-ip-source-tabs">
-                <button type="button" id="ip-source-tab-smart" class="adm-ip-source-tab active" onclick="setCleanIpSourceMode('smart')" data-i18n="ip_scan_source_smart">هوشمند</button>
-                <button type="button" id="ip-source-tab-pool" class="adm-ip-source-tab" onclick="setCleanIpSourceMode('pool')" data-i18n="ip_scan_source_pool">مخزن ایپی تمیز</button>
+                <button type="button" id="ip-source-tab-smart" class="adm-ip-source-tab" onclick="setCleanIpSourceMode('smart')" data-i18n="ip_scan_source_smart">هوشمند</button>
+                <button type="button" id="ip-source-tab-pool" class="adm-ip-source-tab active" onclick="setCleanIpSourceMode('pool')" data-i18n="ip_scan_source_pool">مخزن ایپی تمیز</button>
             </div>
             <div id="ip-source-smart-view">
                 <p class="adm-ip-smart-desc" data-i18n="ip_scan_smart_desc">در حالت هوشمند، آی‌پی‌های تمیز از لینک زیر دریافت می‌شوند:</p>
-                <a id="ip-smart-url-link" href="${REMOTE_CLEAN_IPS_URL}" target="_blank" rel="noopener noreferrer" class="adm-ip-smart-link">${REMOTE_CLEAN_IPS_URL}</a>
+                <span id="ip-smart-url-link" class="adm-ip-smart-link">${REMOTE_CLEAN_IPS_URL}</span>
             </div>
             <div id="ip-source-pool-view" class="hidden">
                 <p class="adm-ip-scanner-sub" style="margin-bottom:0.75rem" data-i18n="ip_scan_pool_desc">مدیریت آی‌پی‌های ذخیره‌شده در مخزن پنل</p>
@@ -9132,13 +9288,6 @@ Commercial support is available at
         </div>
         <p id="panel-update-status" class="text-xs mt-3" style="color: var(--admin-muted)"></p>
         <button type="button" onclick="triggerPanelUpdate()" id="panel-update-btn" class="admin-btn-primary w-full py-2.5 text-sm font-bold mt-4" data-i18n="panel_update_btn">به‌روزرسانی پنل</button>
-    </div>
-    <div class="admin-card p-6">
-        <div class="flex items-center justify-between gap-3">
-            <span class="text-sm font-bold" style="color: var(--admin-text)" data-i18n="kill_all_services_label">قطع تمامی سرویس‌ها</span>
-            <div id="all-services-off-toggle" class="adm-tg-toggle" onclick="toggleAllServicesOffSwitch()" role="switch" aria-checked="false"></div>
-        </div>
-        <p class="text-xs leading-relaxed mt-3" style="color: var(--admin-muted)" data-i18n="kill_all_services_desc">با روشن شدن این گزینه تمامی سرویس‌ها متوقف و قطع خواهند شد در صورتی که مورد سو استفاده قرار گرفتید این گزینه را روشن کنید و با عوض کردن ادرس ها پنل خود را امن کنید .</p>
     </div>
     <div class="admin-card p-6 space-y-4">
         <h3 class="text-lg font-black mb-1" style="color: var(--admin-text)" data-i18n="wc_protocol_title">تنظیمات ادرس صفحات</h3>
@@ -9293,6 +9442,29 @@ Commercial support is available at
         <p id="pwd-change-error" class="hidden text-sm rounded-xl p-3" style="background: color-mix(in srgb, #ef4444 12%, var(--admin-card)); color: #dc2626; border: 1px solid color-mix(in srgb, #ef4444 30%, var(--admin-border));"></p>
         <button type="button" onclick="changeAdminPassword()" id="pwd-change-btn" class="admin-btn-primary w-full py-2.5 text-sm font-bold" data-i18n="pwd_change_btn">تغییر رمز عبور</button>
     </div>
+    </div>
+</div>
+<div id="section-panel-control" class="adm-section">
+    <div class="adm-settings-stack">
+        <div class="admin-card p-6">
+            <h3 class="text-lg font-black mb-2" style="color: var(--admin-text)" data-i18n="panel_control_restart_title">ری‌استارت پنل</h3>
+            <p class="text-sm mb-4" style="color: var(--admin-muted)" data-i18n="panel_control_restart_desc">شمارشگر آپتایم و کش‌های موقت داخلی ورکر پاک‌سازی می‌شود. کاربران و تنظیمات شما دست‌نخورده باقی می‌مانند.</p>
+            <button type="button" onclick="restartPanelAction()" id="panel-restart-btn" class="admin-btn-primary w-full py-2.5 text-sm font-bold" data-i18n="panel_control_restart_btn">ری‌استارت پنل</button>
+        </div>
+        <div class="admin-card p-6">
+            <div class="flex items-center justify-between gap-3">
+                <span class="text-sm font-bold" style="color: var(--admin-text)" data-i18n="panel_control_disable_label">خاموش کردن پنل مدیریت</span>
+                <div id="panel-disabled-toggle" class="adm-tg-toggle" onclick="togglePanelDisabledSwitch()" role="switch" aria-checked="false"></div>
+            </div>
+            <p class="text-xs leading-relaxed mt-3" style="color: var(--admin-muted)" data-i18n="panel_control_disable_desc">با فعال شدن این گزینه، صفحه ورود و پنل مدیریت برای همه غیرقابل دسترسی می‌شود و صفحه وضعیت Nexa نمایش داده می‌شود. سرویس‌های VPN فعال باقی می‌مانند. برای بازگشت، آدرس را با <code dir="ltr">?unlock=1</code> باز کنید (مثال: <code dir="ltr">/admin?unlock=1</code>).</p>
+        </div>
+        <div class="admin-card p-6">
+            <div class="flex items-center justify-between gap-3">
+                <span class="text-sm font-bold" style="color: var(--admin-text)" data-i18n="kill_all_services_label">قطع تمامی سرویس‌ها</span>
+                <div id="all-services-off-toggle" class="adm-tg-toggle" onclick="toggleAllServicesOffSwitch()" role="switch" aria-checked="false"></div>
+            </div>
+            <p class="text-xs leading-relaxed mt-3" style="color: var(--admin-muted)" data-i18n="kill_all_services_desc">با روشن شدن این گزینه تمامی سرویس‌ها متوقف و قطع خواهند شد در صورتی که مورد سو استفاده قرار گرفتید این گزینه را روشن کنید و با عوض کردن ادرس ها پنل خود را امن کنید .</p>
+        </div>
     </div>
 </div>
 <div id="section-about" class="adm-section">
@@ -11442,6 +11614,7 @@ Commercial support is available at
             'cdn-proxy': { title: { fa: 'پروکسی CDN', en: 'CDN Proxy' }, desc: { fa: 'تنظیمات پروکسی CDN کلودفلر', en: 'Cloudflare CDN proxy settings' } },
             logs: { title: { fa: 'لاگ فعالیت', en: 'Activity Log' }, desc: { fa: 'مشاهده لاگ ها', en: 'View Logs' } },
             settings: { title: { fa: 'تنظیمات پنل', en: 'Panel Settings' }, desc: { fa: 'تنظیمات ورکر، پروتکل، اشتراک و بکاپ', en: 'Worker, protocol, subscription and backup settings' } },
+            'panel-control': { title: { fa: 'کنترل پنل', en: 'Panel Control' }, desc: { fa: 'ری‌استارت، خاموش کردن پنل و قطع سرویس‌ها', en: 'Restart, disable panel and kill switch' } },
             about: { title: { fa: 'درباره ما', en: 'About Us' }, desc: { fa: 'معرفی تیم NEXA و ماموریت پنل', en: 'NEXA team intro and panel mission' } }
         };
         let usersRefreshInterval = null;
@@ -11558,6 +11731,9 @@ Commercial support is available at
                 loadAllServicesOff();
                 loadBackupSettings();
                 if (window.panelUpdateStatus) updatePanelUpdateUI(window.panelUpdateStatus);
+            }
+            if (name === 'panel-control') {
+                loadPanelControlSection();
             }
             toggleAdminSidebar(false);
             if (location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
@@ -11676,6 +11852,74 @@ Commercial support is available at
                 }
             } catch (e) {}
         }
+       async function loadPanelControlSection() {
+          await loadAllServicesOff();
+          await loadPanelDisabledState();
+      }
+      let panelDisabledEnabled = false;
+      function updatePanelDisabledUI() {
+          const toggle = document.getElementById('panel-disabled-toggle');
+          if (!toggle) return;
+          toggle.classList.toggle('on', panelDisabledEnabled);
+          toggle.setAttribute('aria-checked', panelDisabledEnabled ? 'true' : 'false');
+      }
+      async function loadPanelDisabledState() {
+          try {
+              const res = await fetch('/api/panel-disabled');
+              if (!res.ok) return;
+              const data = await res.json();
+              panelDisabledEnabled = !!data.enabled;
+              updatePanelDisabledUI();
+          } catch (e) {}
+      }
+      async function togglePanelDisabledSwitch() {
+          const lang = localStorage.getItem('nexa-admin-lang') || 'fa';
+          if (!panelDisabledEnabled) {
+              const ok = await showNexaConfirm(
+                  lang === 'en' ? 'Admin login will be blocked for everyone. To return, open the URL with ?unlock=1. Continue?' : 'صفحه ورود و پنل مدیریت برای همه غیرفعال می‌شود. برای بازگشت باید آدرس را با ?unlock=1 باز کنید. ادامه می‌دهید؟',
+                  { title: lang === 'en' ? 'Disable panel' : 'خاموش کردن پنل', danger: true, confirmText: lang === 'en' ? 'Yes, disable' : 'بله، خاموش شود' }
+              );
+              if (!ok) return;
+          }
+          panelDisabledEnabled = !panelDisabledEnabled;
+          updatePanelDisabledUI();
+          try {
+              const res = await fetch('/api/panel-disabled', {
+                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ enabled: panelDisabledEnabled })
+              });
+              const data = await res.json();
+              if (!res.ok || !data.success) throw new Error(data.error || 'failed');
+              showNexaToast(panelDisabledEnabled ? (lang === 'en' ? 'Panel disabled' : 'پنل مدیریت غیرفعال شد') : (lang === 'en' ? 'Panel enabled' : 'پنل مدیریت مجدداً فعال شد'));
+          } catch (e) {
+              panelDisabledEnabled = !panelDisabledEnabled;
+              updatePanelDisabledUI();
+              showNexaToast(lang === 'en' ? 'Failed to save' : 'خطا در ذخیره', 'error');
+          }
+      }
+      async function restartPanelAction() {
+          const lang = localStorage.getItem('nexa-admin-lang') || 'fa';
+          const ok = await showNexaConfirm(
+              lang === 'en' ? 'This resets the uptime counter and clears temporary caches. Continue?' : 'شمارشگر آپتایم و کش‌های موقت پاک‌سازی می‌شود. ادامه می‌دهید؟',
+              { title: lang === 'en' ? 'Restart panel' : 'ری‌استارت پنل', confirmText: lang === 'en' ? 'Yes, restart' : 'بله، ری‌استارت شود' }
+          );
+          if (!ok) return;
+          const btn = document.getElementById('panel-restart-btn');
+          if (btn) { btn.disabled = true; btn.textContent = lang === 'en' ? 'Restarting...' : 'در حال ری‌استارت...'; }
+          try {
+              const res = await fetch('/api/panel-restart', { method: 'POST' });
+              const data = await res.json();
+              if (!res.ok || !data.success) throw new Error(data.error || 'failed');
+              showNexaToast(lang === 'en' ? 'Panel restarted' : 'پنل با موفقیت ری‌استارت شد');
+          } catch (e) {
+              showNexaToast(lang === 'en' ? 'Restart failed' : 'خطا در ری‌استارت', 'error');
+          } finally {
+              if (btn) { btn.disabled = false; btn.textContent = 'ری‌استارت پنل'; }
+          }
+      }
+      window.togglePanelDisabledSwitch = togglePanelDisabledSwitch;
+      window.restartPanelAction = restartPanelAction;
+      window.loadPanelControlSection = loadPanelControlSection;
         async function saveAllServicesOff(silent) {
             const lang = localStorage.getItem('nexa-admin-lang') || 'fa';
             const dict = ADMIN_I18N[lang] || ADMIN_I18N.fa;
@@ -13569,7 +13813,7 @@ function closeUsageWarning() {
 let cachedIpsData = {};
 let ipScanBestResults = [];
 let scannerPoolIps = [];
-let cleanIpSourceMode = 'smart';
+let cleanIpSourceMode = 'pool';
 let cleanIpsUrl = '${REMOTE_CLEAN_IPS_URL}';
 const IP_SERVER_OPERATOR_LABELS = {
     IR_CLOUD: 'آیپی ایران پشت کلود',
@@ -13630,7 +13874,6 @@ async function runCleanIpScanner() {
         return;
     }
     const totalTests = Math.min(400, Math.max(20, Number(document.getElementById('ip-scan-total')?.value) || 140));
-    const keep = Math.min(30, Math.max(1, Number(document.getElementById('ip-scan-keep')?.value) || 8));
     const timeout = 2000;
     const probes = 3;
     const conc = 12;
@@ -13693,7 +13936,7 @@ async function runCleanIpScanner() {
     alive.forEach(function(item) {
         if (!byIp[item.ip] || item.score < byIp[item.ip].score) byIp[item.ip] = item;
     });
-    const uniqueSorted = Object.values(byIp).sort(function(a, b) { return a.score - b.score; }).slice(0, keep);
+    const uniqueSorted = Object.values(byIp).sort(function(a, b) { return a.score - b.score; });
     ipScanBestResults = uniqueSorted.map(function(item) { return item.ip; });
     barFill.style.width = '100%';
     setTimeout(function() { bar.style.display = 'none'; }, 500);
@@ -13756,7 +13999,6 @@ function renderCleanIpSourceView() {
     if (tabPool) tabPool.classList.toggle('active', isPool);
     const link = document.getElementById('ip-smart-url-link');
     if (link) {
-        link.href = cleanIpsUrl || '${REMOTE_CLEAN_IPS_URL}';
         link.textContent = cleanIpsUrl || '${REMOTE_CLEAN_IPS_URL}';
     }
 }
