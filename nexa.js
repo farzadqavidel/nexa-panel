@@ -6074,7 +6074,7 @@ const NEXA_CONFIRM_CSS = `
             justify-content: center;
             padding: 1rem;
             background: rgba(15, 23, 42, 0.5);
-            backdrop-filter: blur(10px);
+            backdrop-filter: blur(4px);
             -webkit-backdrop-filter: blur(10px);
             opacity: 0;
             pointer-events: none;
@@ -6091,7 +6091,7 @@ const NEXA_CONFIRM_CSS = `
             background: color-mix(in srgb, var(--confirm-bg, var(--card-bg, var(--admin-card, #ffffff))) 88%, transparent);
             border: 1px solid color-mix(in srgb, var(--confirm-border, var(--card-border, var(--admin-border, #dde4ec))) 70%, rgba(255,255,255,0.4));
             box-shadow: 0 24px 60px rgba(15, 23, 42, 0.28), inset 0 1px 0 rgba(255,255,255,0.25);
-            backdrop-filter: blur(24px);
+            backdrop-filter: blur(6px);
             -webkit-backdrop-filter: blur(24px);
             transform: scale(0.92) translateY(12px);
             transition: transform 0.28s cubic-bezier(0.21, 1.02, 0.73, 1);
@@ -6239,8 +6239,44 @@ const NEXA_QR_SCRIPT = `<script>
         window.nexaBuildSubscriptionQrText = function(vlessText, subLinkUrl) {
             return subLinkUrl || '';
         };
+        var nexaQrcodeLoadPromise = null;
+        function nexaEnsureQrcodeLoaded() {
+            if (window.QRCode) return Promise.resolve();
+            if (nexaQrcodeLoadPromise) return nexaQrcodeLoadPromise;
+            var sources = [
+                'https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js',
+                'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js'
+            ];
+            function tryLoad(i) {
+                return new Promise(function(resolve, reject) {
+                    if (i >= sources.length) { reject(new Error('qrcode load failed')); return; }
+                    var script = document.createElement('script');
+                    script.src = sources[i];
+                    script.onload = function() { resolve(); };
+                    script.onerror = function() {
+                        script.remove();
+                        tryLoad(i + 1).then(resolve, reject);
+                    };
+                    document.head.appendChild(script);
+                });
+            }
+            nexaQrcodeLoadPromise = tryLoad(0).catch(function(err) {
+                nexaQrcodeLoadPromise = null;
+                throw err;
+            });
+            return nexaQrcodeLoadPromise;
+        }
         window.renderQrCode = function(box, text, size) {
-            if (!box || !text || typeof QRCode === 'undefined') return;
+            if (!box || !text) return;
+            if (typeof QRCode === 'undefined') {
+                box.innerHTML = '<span style="font-size:11px;color:#999">در حال بارگذاری...</span>';
+                nexaEnsureQrcodeLoaded().then(function() {
+                    window.renderQrCode(box, text, size);
+                }).catch(function() {
+                    box.innerHTML = '<span style="font-size:11px;color:#e11d48">خطا در بارگذاری QR — اتصال اینترنت را بررسی کنید</span>';
+                });
+                return;
+            }
             box.innerHTML = '';
             new QRCode(box, {
                 text: text,
@@ -6478,7 +6514,7 @@ const NEXA_ADMIN_SHELL_CSS = `
         .adm-social-icon-btn.web { color: #34d399; }
         .adm-topbar {
             position: sticky; top: 0; z-index: 40; display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
-            padding: 0.85rem 1rem; background: var(--admin-header); backdrop-filter: blur(16px) saturate(1.4);
+            padding: 0.85rem 1rem; background: var(--admin-header); backdrop-filter: blur(4px) saturate(1.2);
             border-bottom: 1px solid color-mix(in srgb, var(--admin-border) 80%, transparent);
             box-shadow: 0 1px 0 color-mix(in srgb, var(--admin-primary) 6%, transparent);
         }
@@ -7173,7 +7209,7 @@ const NEXA_ADMIN_SHELL_CSS = `
     .adm-bulk-bar {
         border-radius: 0.9rem; padding: 0.85rem 1rem; margin-bottom: 0;
         background: linear-gradient(135deg, color-mix(in srgb, var(--admin-primary) 16%, var(--u-glass)), var(--u-glass));
-        backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+        backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(12px);
         border: 1px solid color-mix(in srgb, var(--admin-primary) 38%, var(--admin-border));
         box-shadow: 0 0 32px -8px var(--u-neon-glow), inset 0 1px 0 color-mix(in srgb, var(--admin-primary) 15%, transparent);
     }
@@ -7343,12 +7379,6 @@ const NEXA_ADMIN_SHELL_CSS = `
         height: 100%; border-radius: 9999px; transition: width 0.6s cubic-bezier(0.4,0,0.2,1);
         position: relative; overflow: hidden;
     }
-    .adm-up-fill::after {
-        content: ''; position: absolute; inset: 0;
-        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.25), transparent);
-        animation: adm-shimmer 2.5s ease-in-out infinite;
-    }
-    @keyframes adm-shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
     .adm-up-fill.vol-low { background: linear-gradient(90deg, #10b981, #34d399); box-shadow: 0 0 10px -2px rgba(16,185,129,0.5); }
     .adm-up-fill.vol-mid { background: linear-gradient(90deg, #f59e0b, #fbbf24); box-shadow: 0 0 10px -2px rgba(245,158,11,0.4); }
     .adm-up-fill.vol-high { background: linear-gradient(90deg, #ef4444, #f87171); box-shadow: 0 0 10px -2px rgba(239,68,68,0.45); }
@@ -8360,7 +8390,7 @@ Commercial support is available at
                 linear-gradient(145deg, #0c1210 0%, #111916 45%, #0f1512 100%);
         }
         .login-card {
-            backdrop-filter: blur(12px);
+            backdrop-filter: blur(4px);
             background: rgba(255, 255, 255, 0.92);
             border: 1px solid rgba(63, 181, 58, 0.15);
             box-shadow: 0 24px 60px rgba(30, 138, 46, 0.12), 0 0 0 1px rgba(255,255,255,0.6) inset;
@@ -8653,8 +8683,6 @@ Commercial support is available at
     </script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
     <link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet" type="text/css" />
     <script>
         tailwind.config = {
@@ -11635,6 +11663,34 @@ Commercial support is available at
             'panel-control': { title: { fa: 'کنترل پنل', en: 'Panel Control' }, desc: { fa: 'ری‌استارت، خاموش کردن پنل و قطع سرویس‌ها', en: 'Restart, disable panel and kill switch' } },
             about: { title: { fa: 'درباره ما', en: 'About Us' }, desc: { fa: 'معرفی تیم NEXA و ماموریت پنل', en: 'NEXA team intro and panel mission' } }
         };
+        let leafletLoadPromise = null;
+        function ensureLeafletLoaded() {
+            if (window.L) return Promise.resolve();
+            if (leafletLoadPromise) return leafletLoadPromise;
+            leafletLoadPromise = new Promise(function(resolve) {
+                const link = document.createElement('link');
+                link.rel = 'stylesheet';
+                link.href = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css';
+                document.head.appendChild(link);
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js';
+                script.onload = resolve;
+                document.head.appendChild(script);
+            });
+            return leafletLoadPromise;
+        }
+        let qrcodeLoadPromise = null;
+        function ensureQrcodeLoaded() {
+            if (window.QRCode) return Promise.resolve();
+            if (qrcodeLoadPromise) return qrcodeLoadPromise;
+            qrcodeLoadPromise = new Promise(function(resolve) {
+                const script = document.createElement('script');
+                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
+                script.onload = resolve;
+                document.head.appendChild(script);
+            });
+            return qrcodeLoadPromise;
+        }
         let usersRefreshInterval = null;
         function ensureUsersRefreshInterval() {
             if (usersRefreshInterval) return;
@@ -11722,7 +11778,7 @@ Commercial support is available at
                 loadAdminLogs();
             }
             if (name === 'dashboard') {
-                loadDashboard();
+                ensureLeafletLoaded().then(function() { loadDashboard(); });
             }
             if (name === 'node-server') {
                 loadNodeServer();
@@ -14909,7 +14965,6 @@ function applySelectedIps() {
     <title>وضعیت سرویس</title>
     ${NEXA_USER_THEME_SCRIPT}
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet" type="text/css" />
     <script>
         tailwind.config = { darkMode: 'class', theme: { extend: { fontFamily: { sans: ['Vazirmatn', 'sans-serif'] } } } }
