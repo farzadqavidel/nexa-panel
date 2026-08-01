@@ -458,11 +458,18 @@
 .guide-note strong{
   color: var(--accent-2);
 }
-/* ===== Image protection ===== */
+/* ===== Uniform Image Sizing & WebP Presentation ===== */
   .frame-card img,
   .guide-shot img,
   .feature-block .fb-shot img,
   .feature-pair .fp-shot img{
+    width: 100%;
+    height: 360px;
+    max-height: 360px;
+    object-fit: contain;
+    object-position: center;
+    background: var(--surface-2);
+    padding: 10px;
     cursor: zoom-in;
     -webkit-user-drag: none;
     user-select: none;
