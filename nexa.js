@@ -61,7 +61,7 @@ const REMOTE_MANIFEST_ANNOUNCE_URL = "https://raw.githubusercontent.com/farzadqa
 const REMOTE_UPDATE_SCRIPT_URL = "https://raw.githubusercontent.com/farzadqavidel/nexa-panel/refs/heads/main/nexa.js";
 const REMOTE_CLEAN_IPS_URL = "https://raw.githubusercontent.com/farzadqavidel/nexa-panel/refs/heads/main/resources/clean-ip.json";
 
-const PANEL_VERSION = "2.6.4";
+const PANEL_VERSION = "2.8.3";
 const CLEAN_IPS_CACHE_TTL_MS_MS = 60 * 60 * 1000;
 const MANIFEST_CACHE_TTL_MS = 5 * 60 * 1000;
 const MANIFEST_FETCH_TIMEOUT_MS = 8000;
@@ -493,7 +493,6 @@ const WORKER_CONFIG_DEFAULTS = {
   subEmoji: false,
   statusPagePath: 'servicestat',
   subPagePath: 'sub',
-  logsPagePath: 'logs',
   adminPagePath: 'admin',
   ssEncryption: 'aes-128-gcm',
   infoRemarkTemplate: '[مصرف شده: {used}] [{total} : کل ] [مانده : {dayremind}]',
@@ -709,7 +708,6 @@ const WorkerConfigService = {
       : d.tlsFragment;
     const statusPagePath = this.cleanPathSegment(src.statusPagePath) || d.statusPagePath;
     const subPagePath = this.cleanPathSegment(src.subPagePath) || d.subPagePath;
-    const logsPagePath = this.cleanPathSegment(src.logsPagePath) || d.logsPagePath;
     const adminPagePath = this.cleanPathSegment(src.adminPagePath) || d.adminPagePath;
     let transportPath = pickStr('transportPath', 120);
     if (!transportPath.startsWith('/')) transportPath = '/' + transportPath;
@@ -733,7 +731,6 @@ const WorkerConfigService = {
       subEmoji: pickBool('subEmoji'),
       statusPagePath,
       subPagePath,
-      logsPagePath,
       adminPagePath,
       ssEncryption: pickStr('ssEncryption', 32) || d.ssEncryption,
       infoRemarkTemplate: pickStr('infoRemarkTemplate', 300) || d.infoRemarkTemplate,
@@ -1244,13 +1241,6 @@ export default {
     if (url.pathname === '/my-ip/geo') {
       return await Router.handleMyIpGeo(request);
     }
-    const logsPath = workerCfg.logsPagePath || WORKER_CONFIG_DEFAULTS.logsPagePath;
-    if (pathStartsWithSegment(url.pathname, logsPath)) {
-      return await Router.handleUserLogsPage(request, url, env, logsPath);
-    }
-    if (url.pathname === '/' + logsPath) {
-      return await Router.handleLogsPage(request, env);
-    }
     if (url.pathname === '/setup') {
       return await Router.handleSetupPage(request, env);
     }
@@ -1347,19 +1337,6 @@ const Router = {
       if (isUserRequestLimitExceeded(user, user.username)) {
         return new Response("Request limit exceeded", { status: 429 });
       }
-      const clientIp = request ? getClientIp(request) : '';
-      if (clientIp) {
-        const logTask = async () => {
-          try {
-            await ConnectionLogService.addLog(env, user.username, clientIp, {
-              eventType: 'دریافت کانفیگ',
-              extra: 'مسیر: /' + seg + '/' + user.username
-            });
-          } catch (e) {}
-        };
-        if (ctx) ctx.waitUntil(logTask());
-        else logTask();
-      }
       return await SubscriptionService.generateText(user, host, env, request, url);
     } catch (err) {
       return new Response("Error building config: " + err.message, { status: 500 });
@@ -1372,55 +1349,6 @@ const Router = {
     return new Response(buildSetupHtml(status, { cfTokenMode }), {
       headers: { "Content-Type": "text/html; charset=utf-8" }
     });
-  },
-  async handleLogsPage(request, env) {
-    const setupReady = await SetupService.isReady(env);
-    if (!setupReady) {
-      return Response.redirect(new URL('/setup', new URL(request.url).origin).href, 302);
-    }
-    const authorized = await DbService.verifyApiAuth(request, env);
-    if (!authorized) {
-      return new Response(HTML_TEMPLATES.login, {
-        headers: { "Content-Type": "text/html; charset=utf-8" }
-      });
-    }
-    const adminPath = await WorkerConfigService.getAdminPath(env);
-    return Response.redirect(new URL('/' + adminPath + '#logs', new URL(request.url).origin).href, 302);
-  },
-  async handleUserLogsPage(request, url, env, logsPath) {
-    const setupReady = await SetupService.isReady(env);
-    if (!setupReady) {
-      return Response.redirect(new URL('/setup', new URL(request.url).origin).href, 302);
-    }
-    const authorized = await DbService.verifyApiAuth(request, env);
-    if (!authorized) {
-      return new Response(HTML_TEMPLATES.login, {
-        headers: { "Content-Type": "text/html; charset=utf-8" }
-      });
-    }
-    const seg = logsPath || WORKER_CONFIG_DEFAULTS.logsPagePath;
-    const username = extractSegmentKey(url.pathname, seg);
-    if (!username) {
-      return new Response("Username is required", { status: 400 });
-    }
-    try {
-      const user = await env.DB.prepare("SELECT username FROM users WHERE username = ? OR uuid = ?").bind(username, username).first();
-      if (!user) {
-        return new Response(HTML_TEMPLATES.userNotFound, {
-          status: 404,
-          headers: { "Content-Type": "text/html; charset=utf-8" }
-        });
-      }
-      const html = HTML_TEMPLATES.serviceLogs.replace(
-        "/* {{USERNAME_PLACEHOLDER}} */",
-        `window.serviceLogUsername = ${JSON.stringify(user.username)}; window.serviceLogsPagePath = ${JSON.stringify(seg)};`
-      );
-      return new Response(html, {
-        headers: { "Content-Type": "text/html; charset=utf-8" }
-      });
-    } catch (err) {
-      return new Response("Error: " + err.message, { status: 500 });
-    }
   },
   async handlePanel(request, env) {
     const setupReady = await SetupService.isReady(env);
@@ -1715,28 +1643,6 @@ const Router = {
       }), {
         headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }
       });
-    }
-    if (url.pathname.startsWith('/api/connection-logs/')) {
-      const logUsername = decodeURIComponent(url.pathname.slice('/api/connection-logs/'.length));
-      if (!logUsername) {
-        return new Response(JSON.stringify({ error: "نام کاربری اجباری است" }), { status: 400, headers: { "Content-Type": "application/json; charset=utf-8" } });
-      }
-      const logUser = await env.DB.prepare("SELECT username FROM users WHERE username = ? OR uuid = ?").bind(logUsername, logUsername).first();
-      if (!logUser) {
-        return new Response(JSON.stringify({ error: "کاربر یافت نشد" }), { status: 404, headers: { "Content-Type": "application/json; charset=utf-8" } });
-      }
-      if (request.method === 'GET') {
-        const logs = await ConnectionLogService.getLogs(env, logUser.username);
-        return new Response(JSON.stringify({ logs, username: logUser.username }), {
-          headers: { "Content-Type": "application/json; charset=utf-8" }
-        });
-      }
-      if (request.method === 'DELETE') {
-        await ConnectionLogService.clearLogs(env, logUser.username);
-        return new Response(JSON.stringify({ success: true }), {
-          headers: { "Content-Type": "application/json; charset=utf-8" }
-        });
-      }
     }
     if (url.pathname === '/api/clean-ips' && request.method === 'GET') {
       const forceRefresh = url.searchParams.get('refresh') === '1';
@@ -2041,13 +1947,12 @@ const Router = {
         const newAdminPath = WorkerConfigService.cleanPathSegment(body.adminPagePath) || WORKER_CONFIG_DEFAULTS.adminPagePath;
         const newStatusPath = WorkerConfigService.cleanPathSegment(body.statusPagePath) || WORKER_CONFIG_DEFAULTS.statusPagePath;
         const newSubPath = WorkerConfigService.cleanPathSegment(body.subPagePath) || WORKER_CONFIG_DEFAULTS.subPagePath;
-        const newLogsPath = WorkerConfigService.cleanPathSegment(body.logsPagePath) || WORKER_CONFIG_DEFAULTS.logsPagePath;
         const reservedPaths = ['api', 'setup', 'login', 'guide', 'locations', 'my-ip'];
-        const allPaths = [newAdminPath, newStatusPath, newSubPath, newLogsPath];
+        const allPaths = [newAdminPath, newStatusPath, newSubPath];
         const hasDuplicate = new Set(allPaths).size !== allPaths.length;
         const hasReserved = allPaths.some(p => reservedPaths.includes(p));
         if (hasDuplicate || hasReserved) {
-          return new Response(JSON.stringify({ error: "آدرس پنل مدیریت، صفحه وضعیت، ساب و لاگ‌ها باید با هم و با مسیرهای رزرو شده (api, setup, login, guide) متفاوت باشند" }), {
+          return new Response(JSON.stringify({ error: "آدرس پنل مدیریت، صفحه وضعیت و ساب باید با هم و با مسیرهای رزرو شده (api, setup, login, guide) متفاوت باشند" }), {
             status: 400, headers: { "Content-Type": "application/json; charset=utf-8" }
           });
         }
@@ -2231,7 +2136,6 @@ const Router = {
         await ensureSystemUser(env.DB);
         await env.DB.prepare("DELETE FROM settings WHERE key != 'ADMIN'").run();
         await env.DB.prepare("DELETE FROM panel_logs").run();
-        await env.DB.prepare("DELETE FROM connection_logs").run();
         trafficByteCache.clear();
         activeConnCountByUser.clear();
         lastActiveWriteAt.clear();
@@ -2274,7 +2178,7 @@ const Router = {
         deactivate: 'قطع گروهی',
         reset_volume: 'ریست حجم گروهی',
         reset_time: 'ریست زمان گروهی',
-        reset_requests: 'ریست ریکوئست کل گروهی',
+        reset_requests: 'ریست ریکوئست کل و روزانه گروهی',
         enable_save: 'ذخیره گروهی',
         update: 'ویرایش گروهی'
       };
@@ -2318,7 +2222,7 @@ const Router = {
             await LogService.addLog(env, 'تغییر ذخیره کاربر', 'کاربر: ' + username + ' | ' + newState, getClientIp(request));
             return new Response(JSON.stringify({ success: true }), { headers: { "Content-Type": "application/json" } });
           }
-          if (body.reset_time || body.reset_volume) {
+          if (body.reset_time || body.reset_volume || body.reset_requests) {
             const targetUser = await env.DB.prepare("SELECT * FROM users WHERE username = ?").bind(username).first();
             if (isSystemUser(targetUser)) {
               return new Response(JSON.stringify({ error: "ریست حجم یا زمان سرویس اصلی مجاز نیست" }), { status: 403, headers: { "Content-Type": "application/json" } });
@@ -2332,6 +2236,11 @@ const Router = {
             if (body.reset_time) {
               parts.push("created_at = datetime('now')", 'expired_at = NULL');
               logParts.push('ریست زمان');
+            }
+            if (body.reset_requests) {
+              parts.push('used_requests = 0', 'used_requests_today = 0', 'req_last_date = NULL');
+              userRequestPending.set(username, 0);
+              logParts.push('ریست ریکوئست کل و روزانه');
             }
             parts.push('is_active = 1');
             await env.DB.prepare(
@@ -2494,7 +2403,6 @@ async function renameUserService(db, oldUsername, newUsername) {
     return { ok: false, error: 'همچین کاربری با این نام وجود داره' };
   }
   await db.prepare("UPDATE users SET username = ?, status_slug = ? WHERE username = ?").bind(newName, newName, oldName).run();
-  await db.prepare("UPDATE connection_logs SET username = ? WHERE username = ?").bind(newName, oldName).run();
   return { ok: true, username: newName };
 }
 function formatLogValue(value, suffix = '') {
@@ -2572,7 +2480,7 @@ async function applyBulkUserAction(env, usernames, body) {
         await env.DB.prepare("UPDATE users SET created_at = datetime('now'), expired_at = NULL, is_active = 1 WHERE username = ?").bind(username).run();
       } else if (action === 'reset_requests') {
         userRequestPending.set(username, 0);
-        await env.DB.prepare("UPDATE users SET used_requests = 0, is_active = 1 WHERE username = ?").bind(username).run();
+        await env.DB.prepare("UPDATE users SET used_requests = 0, used_requests_today = 0, req_last_date = NULL, is_active = 1 WHERE username = ?").bind(username).run();
       } else if (action === 'enable_save') {
         await env.DB.prepare("UPDATE users SET is_saved = 1 WHERE username = ?").bind(username).run();
       } else if (action === 'update') {
@@ -2935,14 +2843,9 @@ const BackupService = {
       if (!BACKUP_EXCLUDED_SETTINGS.includes(row.key)) settings[row.key] = row.value;
     });
     let panel_logs = [];
-    let connection_logs = [];
     try {
       const { results: pl } = await env.DB.prepare("SELECT * FROM panel_logs ORDER BY id ASC").all();
       panel_logs = pl || [];
-    } catch (e) {}
-    try {
-      const { results: cl } = await env.DB.prepare("SELECT * FROM connection_logs ORDER BY id ASC").all();
-      connection_logs = cl || [];
     } catch (e) {}
     return {
       version: BACKUP_VERSION,
@@ -2950,12 +2853,10 @@ const BackupService = {
       users: users || [],
       settings,
       panel_logs,
-      connection_logs,
       meta: {
         users_count: (users || []).length,
         settings_count: Object.keys(settings).length,
         panel_logs_count: panel_logs.length,
-        connection_logs_count: connection_logs.length
       }
     };
   },
@@ -3009,22 +2910,6 @@ const BackupService = {
           await env.DB.prepare(
             "INSERT INTO panel_logs (action, details, ip, created_at) VALUES (?, ?, ?, ?)"
           ).bind(log.action || '', log.details || '', log.ip || '', log.created_at || new Date().toISOString()).run();
-        }
-      } catch (e) {}
-    }
-    if (Array.isArray(body.connection_logs) && body.connection_logs.length) {
-      try {
-        await env.DB.prepare("DELETE FROM connection_logs").run();
-        for (const log of body.connection_logs) {
-          await env.DB.prepare(
-            "INSERT INTO connection_logs (username, ip, event_type, details, created_at) VALUES (?, ?, ?, ?, ?)"
-          ).bind(
-            log.username || '',
-            log.ip || '',
-            log.event_type || 'اتصال',
-            log.details || '',
-            log.created_at || new Date().toISOString()
-          ).run();
         }
       } catch (e) {}
     }
@@ -3187,103 +3072,6 @@ const LogService = {
     } catch (e) {}
   }
 };
-const ConnectionLogService = {
-  PING_MAX_BYTES: 8192,
-  PING_MAX_MS: 30000,
-  formatBytes(bytes) {
-    if (!bytes || bytes <= 0) return '0 B';
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
-  },
-  formatDuration(durationMs) {
-    if (!durationMs || durationMs < 1000) return 'کمتر از ۱ ث';
-    const sec = Math.round(durationMs / 1000);
-    if (sec < 60) return sec + ' ث';
-    const min = Math.floor(sec / 60);
-    const rem = sec % 60;
-    return rem ? min + ' د ' + rem + ' ث' : min + ' د';
-  },
-  buildDetails(opts = {}) {
-    const parts = [];
-    if (opts.prevIp) parts.push('IP قبلی: ' + opts.prevIp);
-    if (opts.durationMs !== undefined && opts.durationMs !== null) {
-      parts.push('مدت: ' + ConnectionLogService.formatDuration(opts.durationMs));
-    }
-    if (opts.bytes !== undefined && opts.bytes !== null) {
-      parts.push('حجم: ' + ConnectionLogService.formatBytes(opts.bytes));
-    }
-    if (opts.extra) parts.push(opts.extra);
-    return parts.join(' | ');
-  },
-  classifySession(bytes, durationMs) {
-    if (bytes < ConnectionLogService.PING_MAX_BYTES && durationMs < ConnectionLogService.PING_MAX_MS) {
-      return 'پینگ';
-    }
-    return 'اتصال';
-  },
-  applyIpChange(eventType, prevIp, currentIp) {
-    if (!prevIp || prevIp === currentIp) return { eventType, prevIp: null };
-    if (eventType === 'پینگ') return { eventType: 'پینگ (IP جدید)', prevIp };
-    if (eventType === 'اتصال') return { eventType: 'اتصال (IP جدید)', prevIp };
-    return { eventType: 'IP جدید', prevIp };
-  },
-  async getLastIp(env, username) {
-    try {
-      const last = await env.DB.prepare(
-        "SELECT ip FROM connection_logs WHERE username = ? ORDER BY id DESC LIMIT 1"
-      ).bind(username).first();
-      return last?.ip || null;
-    } catch (e) {
-      return null;
-    }
-  },
-  async addLog(env, username, ip, opts = {}) {
-    if (!username || !ip) return;
-    const bytes = opts.bytes || 0;
-    const durationMs = opts.durationMs || 0;
-    let eventType = opts.eventType || ConnectionLogService.classifySession(bytes, durationMs);
-    let prevIp = null;
-    const skipIpCheck = eventType === 'دریافت کانفیگ';
-    if (!skipIpCheck) {
-      prevIp = await ConnectionLogService.getLastIp(env, username);
-      const changed = ConnectionLogService.applyIpChange(eventType, prevIp, ip);
-      eventType = changed.eventType;
-      prevIp = changed.prevIp;
-    } else {
-      prevIp = await ConnectionLogService.getLastIp(env, username);
-      if (prevIp && prevIp !== ip) {
-        eventType = 'دریافت کانفیگ (IP جدید)';
-      }
-    }
-    const details = ConnectionLogService.buildDetails({
-      prevIp: prevIp || null,
-      bytes: skipIpCheck ? null : bytes,
-      durationMs: skipIpCheck ? null : durationMs,
-      extra: opts.extra || ''
-    });
-    try {
-      await env.DB.prepare(
-        "INSERT INTO connection_logs (username, ip, event_type, details, created_at) VALUES (?, ?, ?, ?, ?)"
-      ).bind(username, ip, eventType, details, new Date().toISOString()).run();
-    } catch (e) {}
-  },
-  async getLogs(env, username, limit = 5000) {
-    try {
-      const { results } = await env.DB.prepare(
-        "SELECT * FROM connection_logs WHERE username = ? ORDER BY id DESC LIMIT ?"
-      ).bind(username, limit).all();
-      return results || [];
-    } catch (e) {
-      return [];
-    }
-  },
-  async clearLogs(env, username) {
-    try {
-      await env.DB.prepare("DELETE FROM connection_logs WHERE username = ?").bind(username).run();
-    } catch (e) {}
-  }
-};
 let schemaEnsured = false;
 let cachedAdminSecret = null;
 let cachedPanelPassword = null;
@@ -3353,20 +3141,8 @@ const DbService = {
         )
       `).run();
     } catch (e) {}
-    try {
-      await db.prepare(`
-        CREATE TABLE IF NOT EXISTS connection_logs (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          username TEXT NOT NULL,
-          ip TEXT,
-          event_type TEXT DEFAULT 'اتصال',
-          details TEXT DEFAULT '',
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-      `).run();
-    } catch (e) {}
-    try { await db.prepare("ALTER TABLE connection_logs ADD COLUMN event_type TEXT DEFAULT 'اتصال'").run(); } catch (e) {}
-    try { await db.prepare("ALTER TABLE connection_logs ADD COLUMN details TEXT DEFAULT ''").run(); } catch (e) {}
+    // One-time cleanup for databases created by older Nexa versions.
+    try { await db.prepare("DROP TABLE IF EXISTS " + "connection_" + "logs").run(); } catch (e) {}
     schemaEnsured = true;
   },
   readCfTokenFromEnv(env) {
@@ -4243,10 +4019,6 @@ async function handleVLESS(env, storedData = null, ctx = null, request = null) {
     if (uuid && clientIp) {
       const logConnTask = async () => {
         try {
-          await ConnectionLogService.addLog(env, uname, clientIp, {
-            bytes: sessionBytes,
-            durationMs: sessionDuration
-          });
         } catch (e) {}
       };
       if (ctx) ctx.waitUntil(logConnTask());
@@ -4441,12 +4213,6 @@ async function handleVLESS(env, storedData = null, ctx = null, request = null) {
           const manualBlocked = blockSettings.enabled && DomainBlockService.isBlocked(addr, blockSettings.domains);
           const policyResult = manualBlocked ? { blocked: false } : await ContentPolicyService.checkBlocked(env, addr);
           if (manualBlocked || policyResult.blocked) {
-            const logTask = ConnectionLogService.addLog(env, username, connectClientIp, {
-              eventType: 'مسدود شده',
-              extra: 'دامنه: ' + addr + (policyResult.blocked ? ' (' + policyResult.reason + ')' : '')
-            });
-            if (ctx) ctx.waitUntil(logTask);
-            else logTask.catch(() => {});
             serverSock.close();
             return;
           }
@@ -5379,13 +5145,6 @@ async function resolveRequestUsername(url, env) {
       const user = await StatusUrlService.resolveUser(env.DB, key);
       return user?.username || null;
     }
-    const logsPath = workerCfg.logsPagePath || WORKER_CONFIG_DEFAULTS.logsPagePath;
-    if (pathStartsWithSegment(url.pathname, logsPath)) {
-      const key = extractSegmentKey(url.pathname, logsPath);
-      if (!key) return null;
-      const user = await env.DB.prepare("SELECT username FROM users WHERE username = ? OR uuid = ?").bind(key, key).first();
-      return user?.username || null;
-    }
   } catch (e) {}
   return null;
 }
@@ -5419,8 +5178,10 @@ function trackUserRequest(username, env, ctx) {
 }
 async function getTopRequestUsers(env, limit = 3) {
   try {
+    // Include users with unlimited request plans too. The old max_requests > 0
+    // filter made this card stay empty for most users.
     const { results } = await env.DB.prepare(
-      "SELECT username, used_requests, max_requests, req_last_date, used_requests_today FROM users WHERE is_system != 1 AND max_requests > 0 ORDER BY used_requests DESC LIMIT 30"
+      "SELECT username, used_requests, max_requests, req_last_date, used_requests_today FROM users WHERE COALESCE(is_system, 0) = 0 ORDER BY COALESCE(used_requests, 0) DESC LIMIT 100"
     ).all();
     return (results || [])
       .map(u => ({
@@ -5428,8 +5189,8 @@ async function getTopRequestUsers(env, limit = 3) {
         used: getUserReqUsageTotal(u, u.username),
         max: u.max_requests
       }))
-      .filter(u => u.used > 0 && u.max > 0)
-      .sort((a, b) => (b.used / b.max) - (a.used / a.max))
+      .filter(u => u.used > 0)
+      .sort((a, b) => b.used - a.used)
       .slice(0, limit);
   } catch (e) {
     return [];
@@ -5642,7 +5403,26 @@ const NEXA_USER_SHELL_CSS = `
         .st-metric.full { grid-column: 1 / -1; }
         .st-ip-form { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
         .st-ip-input { flex: 1 1 12rem; min-width: 0; padding: 0.65rem 0.85rem; border-radius: 0.75rem; border: 1px solid var(--stat-border); background: var(--btn-bg); color: var(--text-main); font-family: ui-monospace, monospace; font-size: 0.82rem; direction: ltr; text-align: left; }
-        .st-ip-input:focus { outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent); }`;
+        .st-ip-input:focus { outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent); }
+        /* Nexa UI refresh — consistent compact rhythm on user-facing pages */
+        .st-shell { padding: 0.8rem 0.8rem 2rem; }
+        .st-panel { border-radius: 1rem; box-shadow: 0 5px 24px color-mix(in srgb, var(--text-main) 5%, transparent); }
+        .st-profile { padding: 1rem; gap: 0.8rem; }
+        .st-metric { min-height: 8.5rem; padding: 0.85rem 0.95rem; border-radius: 0.9rem; }
+        .st-content-wrap { padding: 0.95rem; }
+        .st-action { min-height: 2.9rem; padding: 0.72rem 0.85rem; border-radius: 0.78rem; }
+        .st-step { padding: 0.78rem 0.9rem; border-radius: 0.8rem; }
+        .st-tabs { gap: 0.35rem; }
+        .st-tab { padding: 0.48rem 0.78rem; border-radius: 0.7rem; }
+        .st-ip-input { padding: 0.55rem 0.7rem; border-radius: 0.65rem; }
+        @media (max-width: 639px) { .st-shell { padding-inline: 0.65rem; } }
+        .nexa-public-lang-btn { position: fixed; top: 1rem; left: 4.25rem; z-index: 50; min-width: 2.6rem; padding: .42rem .6rem; border-radius: .65rem; border: 1px solid var(--btn-border); background: var(--btn-bg); color: var(--accent); font-size: .7rem; font-weight: 900; cursor: pointer; box-shadow: 0 4px 14px rgba(15,23,42,.1); }
+        .nexa-public-lang-btn:hover { background: color-mix(in srgb, var(--accent) 12%, var(--btn-bg)); }
+        .nexa-public-lang-switch { display: flex; align-items: center; gap: .15rem; padding: .2rem; background: var(--btn-bg); border: 1px solid var(--btn-border); border-radius: .65rem; }
+        .nexa-public-lang-switch button { min-width: 2.1rem; padding: .35rem .55rem; border-radius: .45rem; border: 0; background: transparent; color: var(--text-muted); font-size: .72rem; font-weight: 800; cursor: pointer; }
+        .nexa-public-lang-switch button.active { background: color-mix(in srgb, var(--accent) 14%, var(--btn-bg)); color: var(--accent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); }
+        button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+`;
 const NEXA_SERVICE_PAGE_VARS = `
         :root {
             --admin-bg: #f4f8f6; --admin-bg2: #e8f2ed; --admin-card: #ffffff; --admin-border: #dfe8e4;
@@ -5970,11 +5750,126 @@ const NEXA_SERVICE_PAGE_CSS = `
         .svc-support-link:hover { color: var(--admin-accent); }
         .svc-subsection-title { font-size: 0.82rem; font-weight: 800; margin-bottom: 0.75rem; color: var(--admin-text); display: flex; align-items: center; gap: 0.45rem; }
         .svc-divider { text-align: center; font-size: 0.82rem; margin: 1.5rem 0; color: var(--admin-border); }
-        .svc-footnote { text-align: center; font-size: 0.78rem; padding-top: 0.5rem; color: var(--admin-muted); display: flex; align-items: center; justify-content: center; gap: 0.4rem; flex-wrap: wrap; }` + NEXA_ANNOUNCE_BANNER_CSS;
+        .svc-footnote { text-align: center; font-size: 0.78rem; padding-top: 0.5rem; color: var(--admin-muted); display: flex; align-items: center; justify-content: center; gap: 0.4rem; flex-wrap: wrap; }
+        /* Status page v2 — balanced dashboard composition */
+        body.svc-status-page .svc-wrap { max-width: 70rem; padding-top: 1rem; }
+        body.svc-status-page .svc-grid { grid-template-columns: minmax(15rem, .78fr) minmax(0, 1.7fr); gap: 1rem; align-items: stretch; }
+        body.svc-status-page .svc-sidebar { grid-column: 1; grid-row: 1; position: static; min-height: 100%; padding: 1.15rem; }
+        body.svc-status-page .svc-grid > section { grid-column: 2; grid-row: 1; min-width: 0; display: flex; flex-direction: column; gap: .8rem; }
+        body.svc-status-page .svc-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; }
+        body.svc-status-page .svc-stat { min-height: 9.3rem; display: flex; flex-direction: column; justify-content: space-between; }
+        body.svc-status-page .svc-panel { padding: 1rem; }
+        body.svc-status-page .svc-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; }
+        body.svc-status-page .svc-action.guide { grid-column: auto; }
+        body.svc-status-page .svc-header { margin-bottom: 1rem; }
+        body.svc-status-page .svc-desc { max-width: 31rem; }
+        @media (max-width: 767px) {
+            body.svc-status-page .svc-grid { display: flex; flex-direction: column; gap: .75rem; }
+            body.svc-status-page .svc-sidebar, body.svc-status-page .svc-grid > section { width: 100%; }
+            body.svc-status-page .svc-sidebar { order: 0; }
+            body.svc-status-page .svc-grid > section { order: 1; }
+            body.svc-status-page .svc-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+        @media (max-width: 430px) {
+            body.svc-status-page .svc-metrics, body.svc-status-page .svc-actions { grid-template-columns: 1fr; }
+            body.svc-status-page .svc-action.guide { grid-column: auto; }
+        }
+
+        /* Guide page v2 — focused, spacious and responsive */
+        body.svc-guide-page .svc-wrap { max-width: 72rem; }
+        body.svc-guide-page .svc-grid { grid-template-columns: 1fr; max-width: 62rem; margin: 0 auto; gap: 1rem; }
+        body.svc-guide-page .svc-grid > section { grid-column: 1; grid-row: 1; }
+        body.svc-guide-page .svc-sidebar { grid-column: 1; grid-row: 2; position: static; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 1rem; padding: .9rem 1.1rem; }
+        body.svc-guide-page .svc-sidebar > .svc-page-title { grid-column: 1; }
+        body.svc-guide-page .svc-sidebar .svc-page-desc { grid-column: 1; margin: 0; }
+        body.svc-guide-page .svc-sidebar .svc-side-note { display: none; }
+        body.svc-guide-page .svc-sidebar .telegram-link { grid-column: 2; grid-row: 1 / span 2; white-space: nowrap; }
+        body.svc-guide-page .svc-tabs { justify-content: flex-start; padding: .25rem; border: 1px solid var(--admin-border); background: color-mix(in srgb, var(--admin-card) 92%, transparent); border-radius: .85rem; }
+        body.svc-guide-page .svc-tab { flex: 1; justify-content: center; min-height: 2.6rem; }
+        body.svc-guide-page .svc-panel { padding: 1.2rem; }
+        body.svc-guide-page .svc-step { background: color-mix(in srgb, var(--admin-bg) 38%, var(--admin-card)); padding: .85rem 1rem; }
+        @media (max-width: 767px) {
+            body.svc-guide-page .svc-grid { max-width: none; }
+            body.svc-guide-page .svc-sidebar { display: flex; flex-direction: column; align-items: stretch; text-align: center; }
+            body.svc-guide-page .svc-sidebar .telegram-link { width: 100%; justify-content: center; }
+            body.svc-guide-page .svc-tabs { display: grid; grid-template-columns: repeat(3, 1fr); }
+            body.svc-guide-page .svc-tab { padding-inline: .35rem; font-size: .68rem; }
+        }
+
+        /* Nexa service page v2 — clean dashboard layout */
+        .svc-wrap { max-width: 78rem; padding: 1.25rem 1rem 3rem; }
+        .svc-header { margin-bottom: 1.25rem; padding: 0.75rem 1rem; border-radius: 0.9rem; background: color-mix(in srgb, var(--admin-card) 94%, transparent); box-shadow: 0 4px 18px rgba(15,23,42,.10); }
+        .svc-brand-logo { width: 2.5rem; height: 2.5rem; border-radius: 0.7rem; }
+        .svc-brand-title { font-size: 0.95rem; }
+        .svc-brand-sub { font-size: 0.68rem; }
+        .svc-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(15rem, .75fr); gap: 1rem; align-items: start; }
+        .svc-sidebar { grid-column: 2; grid-row: 1; position: sticky; top: 1rem; }
+        .svc-grid > section { grid-column: 1; grid-row: 1; min-width: 0; }
+        .svc-card { border-radius: 0.9rem; box-shadow: 0 4px 18px rgba(15,23,42,.08); }
+        .svc-sidebar, .svc-panel { padding: 1rem; }
+        .svc-sidebar { gap: .75rem; }
+        .svc-username { font-size: clamp(1.2rem, 2.8vw, 1.65rem); }
+        .svc-desc { font-size: .75rem; line-height: 1.8; }
+        .svc-metrics { gap: .75rem; }
+        .svc-stat { border-radius: .85rem; padding: .8rem .9rem; }
+        .svc-stat-title { font-size: .72rem; }
+        .svc-stat-pct { font-size: 1.45rem; }
+        .svc-progress { height: .42rem; margin: .7rem 0; }
+        .svc-stat-meta { font-size: .7rem; }
+        .svc-section-title { font-size: .85rem; margin-bottom: .75rem; }
+        .svc-actions { gap: .55rem; }
+        .svc-action { min-height: 2.75rem; padding: .65rem .8rem; border-radius: .7rem; font-size: .74rem; }
+        .svc-action.guide { box-shadow: 0 4px 14px -5px var(--admin-glow); }
+        .svc-status { padding: .6rem .75rem; border-radius: .7rem; font-size: .72rem; }
+        .svc-tg-link { padding: .58rem .8rem; font-size: .72rem; }
+        @media (max-width: 767px) {
+            .svc-wrap { padding: .7rem .65rem 2rem; }
+            .svc-grid { display: flex; flex-direction: column; gap: .75rem; }
+            .svc-sidebar, .svc-grid > section { width: 100%; }
+            .svc-sidebar { position: static; order: 0; }
+            .svc-grid > section { order: 1; }
+            .svc-header { margin-bottom: .8rem; }
+            .svc-metrics { grid-template-columns: 1fr 1fr; }
+            .svc-stat-meta { display: block; line-height: 1.8; }
+        }
+        @media (max-width: 430px) {
+            .svc-metrics { grid-template-columns: 1fr; }
+            .svc-action { min-height: 2.6rem; }
+            .svc-brand-sub { display: none; }
+        }
+        /* Unified button palette: calm emerald tones instead of mixed orange/cyan colors */
+        .svc-action.vless,
+        .svc-action.sub,
+        .svc-action.qr {
+            background: color-mix(in srgb, var(--admin-primary) 9%, var(--admin-card));
+            border-color: color-mix(in srgb, var(--admin-primary) 28%, var(--admin-border));
+            color: var(--admin-primary);
+        }
+        .svc-action.vless .svc-action-icon, .svc-action.vless .svc-action-arrow,
+        .svc-action.sub .svc-action-icon, .svc-action.sub .svc-action-arrow,
+        .svc-action.qr .svc-action-icon, .svc-action.qr .svc-action-arrow { color: var(--admin-primary); }
+        .svc-action.vless:hover, .svc-action.sub:hover, .svc-action.qr:hover {
+            background: color-mix(in srgb, var(--admin-primary) 15%, var(--admin-card));
+            border-color: color-mix(in srgb, var(--admin-primary) 45%, var(--admin-border));
+        }
+        .svc-action.guide {
+            background: var(--admin-primary);
+            border: 1px solid var(--admin-primary);
+            box-shadow: 0 4px 14px -5px var(--admin-glow);
+        }
+        .svc-action.guide:hover { background: var(--admin-accent); filter: none; }
+        .nexa-public-lang-btn { min-width: 2.6rem; padding: .42rem .6rem; border-radius: .65rem; border: 1px solid var(--admin-border); background: var(--admin-card); color: var(--admin-primary); font-size: .7rem; font-weight: 900; cursor: pointer; box-shadow: 0 3px 12px rgba(15,23,42,.1); }
+        .nexa-public-lang-btn:hover { background: var(--admin-primary-soft); }
+        .nexa-public-lang-switch { display: flex; align-items: center; gap: .15rem; padding: .2rem; background: var(--admin-card); border: 1px solid var(--admin-border); border-radius: .65rem; }
+        .nexa-public-lang-switch button { min-width: 2.1rem; padding: .35rem .55rem; border-radius: .45rem; border: 0; background: transparent; color: var(--admin-muted); font-size: .72rem; font-weight: 800; cursor: pointer; }
+        .nexa-public-lang-switch button.active { background: var(--admin-primary-soft); color: var(--admin-primary); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--admin-primary) 35%, transparent); }
+        button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--admin-primary); outline-offset: 2px; }
+` + NEXA_ANNOUNCE_BANNER_CSS;
 const NEXA_SERVICE_THEME_TOGGLE = `<button type="button" onclick="toggleNexaTheme()" class="svc-theme-btn" title="تغییر تم">
         <svg class="w-5 h-5 hidden dark:block text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707m12.728 0l-.707-.707M6.343 6.343l-.707-.707M14 12a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
         <svg class="w-5 h-5 block dark:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color: var(--admin-muted)"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
     </button>`;
+
 const NEXA_TOAST_CSS = `
         #nexa-toast-container {
             position: fixed;
@@ -6213,6 +6108,18 @@ const NEXA_CONFIRM_SCRIPT = `<script>
                 cancelBtn.focus();
             });
         };
+        if (!window.__nexaAlertPatched) {
+            window.__nexaAlertPatched = true;
+            window.__nexaNativeAlert = window.alert;
+            window.alert = function(message) {
+                if (typeof window.showNexaToast === 'function') {
+                    var text = String(message || '');
+                    window.showNexaToast(text, /خطا|error|ناموفق/i.test(text) ? 'error' : 'success');
+                } else if (window.__nexaNativeAlert) {
+                    window.__nexaNativeAlert(message);
+                }
+            };
+        }
     </script>`;
 const NEXA_QR_SCRIPT = `<script>
         window.NEXA_QR_MAX_LEN = 2200;
@@ -7117,7 +7024,112 @@ const NEXA_ADMIN_SHELL_CSS = `
         .adm-app .admin-toolbar, .adm-app .admin-table-wrap, .adm-app .adm-tg-card, .adm-app .adm-guide-card {
             transition: border-color 0.2s, box-shadow 0.2s;
         }
-        html.dark .adm-dash-qr-box { background: #f8fafc; }`;
+        html.dark .adm-dash-qr-box { background: #f8fafc; }
+        /* Nexa UI refresh — emerald, balanced density, lightweight controls */
+        :root {
+            --admin-primary: #078f68;
+            --admin-accent: #0f766e;
+            --admin-primary-soft: #e8f8f1;
+            --admin-bg: #f5f8f7;
+            --admin-bg2: #edf5f1;
+            --admin-border: #d8e5df;
+            --admin-shadow: 0 2px 16px rgba(15, 61, 48, 0.07);
+            --admin-shadow-lg: 0 8px 26px rgba(15, 61, 48, 0.11);
+            --admin-input-bg: #fbfdfc;
+            --admin-glow: rgba(7, 143, 104, 0.22);
+        }
+        html.dark {
+            --admin-primary: #38c99a;
+            --admin-accent: #2bb7a7;
+            --admin-primary-soft: rgba(56, 201, 154, 0.13);
+            --admin-bg: #0b1110;
+            --admin-bg2: #101918;
+            --admin-card: #151d1c;
+            --admin-border: #263532;
+            --admin-input-bg: #111a19;
+            --admin-shadow: 0 2px 18px rgba(0, 0, 0, 0.24);
+            --admin-shadow-lg: 0 8px 28px rgba(0, 0, 0, 0.34);
+        }
+        .adm-app { background: linear-gradient(145deg, var(--admin-bg), var(--admin-bg2)); }
+        .adm-sidebar { width: 16rem; }
+        .adm-sidebar-brand { padding: 1.1rem 1rem 0.85rem; }
+        .adm-nav { padding: 0.75rem 0.65rem; gap: 0.22rem; }
+        .adm-nav-item { min-height: 2.55rem; padding: 0.58rem 0.72rem; border-radius: 0.65rem; font-size: 0.79rem; }
+        .adm-sidebar-foot { padding: 0.75rem; gap: 0.55rem; }
+        .adm-main-wrap { min-width: 0; }
+        .adm-content, .adm-main-content { padding: 1.15rem !important; }
+        .admin-card, .admin-toolbar, .admin-table-wrap, .adm-users-panel, .adm-ip-scanner-panel { border-radius: 0.9rem; box-shadow: var(--admin-shadow); }
+        .admin-stat { border-radius: 0.9rem; padding: 0.9rem 1rem; }
+        .admin-btn-primary, .admin-input, .admin-btn-icon { border-radius: 0.65rem; }
+        .admin-btn-primary { min-height: 2.45rem; padding: 0.55rem 0.85rem; box-shadow: 0 3px 12px -4px var(--admin-glow); }
+        .admin-input { min-height: 2.45rem; padding: 0.52rem 0.72rem; font-size: 0.82rem; }
+        textarea.admin-input { min-height: 5.5rem; }
+        .admin-input:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--admin-primary) 16%, transparent); }
+        .adm-section-head { margin-bottom: 0.75rem; }
+        .adm-users-panel-head { padding: 0.8rem 1rem; }
+        .adm-user-cards { gap: 0.65rem; padding: 0.7rem; }
+        .adm-user-card { border-radius: 0.8rem; padding: 0.8rem; gap: 0.6rem; }
+        .adm-modal-card, .adm-modal-content { border-radius: 0.95rem !important; }
+        .adm-table-desktop th, .adm-table-desktop td { padding-top: 0.65rem !important; padding-bottom: 0.65rem !important; }
+        .port-chip, .adm-ip-scanner-port-chip { border-radius: 0.6rem; padding: 0.46rem 0.65rem; }
+        .adm-progress-track { height: 0.32rem; }
+        button, a, input, select, textarea { -webkit-tap-highlight-color: transparent; }
+        button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--admin-primary); outline-offset: 2px; }
+        @media (max-width: 639px) {
+            .adm-content, .adm-main-content { padding: 0.8rem !important; }
+            .admin-input { min-height: 2.35rem; }
+            .admin-stat { padding: 0.78rem; }
+        }
+        @media (min-width: 1024px) {
+            .adm-sidebar + .adm-main-wrap { margin-inline-start: 0; }
+        }
+        /* Unified admin controls */
+        .admin-btn-primary {
+            background: var(--admin-primary);
+            border: 1px solid var(--admin-primary);
+            box-shadow: 0 3px 12px -5px var(--admin-glow);
+        }
+        .admin-btn-primary:hover { background: var(--admin-accent); filter: none; }
+        .admin-btn-icon:hover { background: var(--admin-primary-soft); color: var(--admin-primary); }
+        .adm-update-btn.primary { background: var(--admin-primary); }
+        /* Unified dropdown surfaces — keep every select visually inside the panel */
+        .adm-app select.admin-input,
+        .adm-app .adm-ip-server-field select,
+        .adm-app .adm-cdn-field select {
+            appearance: none; -webkit-appearance: none;
+            min-height: 2.45rem; padding-inline: .8rem 2.2rem;
+            color: var(--admin-text); background-color: var(--admin-card);
+            border: 1px solid var(--admin-border); border-radius: .65rem;
+            background-image: linear-gradient(45deg, transparent 50%, var(--admin-primary) 50%), linear-gradient(135deg, var(--admin-primary) 50%, transparent 50%);
+            background-position: calc(100% - 1rem) 50%, calc(100% - .7rem) 50%;
+            background-size: .35rem .35rem, .35rem .35rem;
+            background-repeat: no-repeat; box-shadow: inset 0 1px 0 rgba(255,255,255,.03);
+        }
+        html[dir="rtl"] .adm-app select.admin-input,
+        html[dir="rtl"] .adm-app .adm-ip-server-field select,
+        html[dir="rtl"] .adm-app .adm-cdn-field select {
+            background-position: 1rem 50%, 1.3rem 50%; padding-inline: 2.2rem .8rem;
+        }
+        .adm-app select.admin-input:hover,
+        .adm-app .adm-ip-server-field select:hover,
+        .adm-app .adm-cdn-field select:hover { border-color: color-mix(in srgb, var(--admin-primary) 45%, var(--admin-border)); }
+        .adm-app select.admin-input:focus,
+        .adm-app .adm-ip-server-field select:focus,
+        .adm-app .adm-cdn-field select:focus { outline: none; border-color: var(--admin-primary); box-shadow: 0 0 0 3px var(--admin-primary-soft); }
+        .adm-app select.admin-input option,
+        .adm-app select.admin-input optgroup,
+        .adm-app .adm-ip-server-field select option,
+        .adm-app .adm-cdn-field select option {
+            color: var(--admin-text); background: var(--admin-card); font-weight: 600; padding: .55rem;
+        }
+        html.dark .adm-app select.admin-input,
+        html.dark .adm-app .adm-ip-server-field select,
+        html.dark .adm-app .adm-cdn-field select { color-scheme: dark; }
+        html.dark .adm-app select.admin-input option,
+        html.dark .adm-app .adm-ip-server-field select option,
+        html.dark .adm-app .adm-cdn-field select option { color: #e8ecf5; background: #151d1c; }
+        #cdn-proxy-country, #cdn-proxy-pick, #cdn-proxy-mode { position: relative; z-index: 2; }
+`;
         const NEXA_USERS_REDESIGN_CSS = `
     /* ── Users section — cyber glass theme ── */
     #section-users {
@@ -8315,6 +8327,24 @@ ${NEXA_FAVICON_TAGS}
 </body>
 </html>`;
 }
+const NEXA_PUBLIC_LANG_TOGGLE = `<div class="nexa-public-lang-switch" role="group" aria-label="Language"><button type="button" data-public-lang="fa" onclick="setNexaPublicLang('fa')">فا</button><button type="button" data-public-lang="en" onclick="setNexaPublicLang('en')">EN</button></div>`;
+const NEXA_PUBLIC_I18N_SCRIPT = `<script>
+(function() {
+  var fa = { 'وضعیت سرویس':'Service status','نام سرویس':'Service name','فعال':'Active','غیرفعال':'Inactive','وضعیت سرویس: فعال':'Service status: Active','وضعیت سرویس: غیرفعال':'Service status: Inactive', 'حجم مصرفی':'Usage','زمان اشتراک':'Subscription time','مصرف شده:':'Used:','حجم کل:':'Total:','باقی‌مانده:':'Remaining:','کل اعتبار:':'Validity:', 'نامحدود':'Unlimited','دریافت لینک اشتراک':'Get subscription links','کپی کانفیگ VLESS':'Copy VLESS config','کپی لینک ساب':'Copy subscription link','QR لینک ساب':'Subscription QR','آموزش اتصال':'Connection guide','بازگشت':'Back','راهنما':'Guide', 'این سرویس فروشی نیست و به صورت رایگان می‌توانید استفاده کنید.':'This service is free and not for sale.','کانال تلگرام':'Telegram channel','سرویس یافت نشد':'Service not found','کاربر مورد نظر وجود ندارد':'User not found', 'سرویس مورد نظر یافت نشد یا حذف شده است. لطفاً لینک صحیح را از پنل یا بات دریافت کنید.':'The service was not found or has been deleted. Please get a valid link from the panel or bot.', 'اسکن کد QR لینک ساب':'Scan subscription QR code','بستن':'Close','در حال بارگذاری...':'Loading...','حجم کل':'Total volume','زمان باقی‌مانده':'Time remaining', 'راهنمای اتصال — اندروید':'Connection guide — Android','راهنمای اتصال — آیفون (iOS)':'Connection guide — iPhone (iOS)','راهنمای اتصال — ویندوز / مک':'Connection guide — Windows / Mac', 'اندروید':'Android','آیفون':'iPhone','ویندوز / مک':'Windows / Mac','مک':'Mac','ویندوز':'Windows', 'هنوز اتصالی ثبت نشده است.':'No connections recorded yet.','بروزرسانی':'Refresh','حذف همه':'Delete all','۰ رویداد':'0 events','نام کاربری اجباری است':'Username is required', 'نتوانستید متصل شوید؟':'Could not connect?','از قسمت پشتیبانی در بات کمک بگیرید':'Get help from the bot support section','نکته:':'Tip:','اتصال':'Connection','دریافت کانفیگ':'Config download','این سرویس فروشی نیست و به صورت رایگان می‌توانید استفاده کنید. از این بخش می‌توانید وضعیت سرویس، میزان مصرف، زمان باقی‌مانده و لینک‌های اتصال را مدیریت کنید.':'This service is free and not for sale. Use this page to view service status, usage, remaining time, and connection links.','کانال تلگرام irnexa@':'Telegram channel — @irnexa','کانال تلگرام — irnexa@':'Telegram channel — @irnexa','در حال بارگذاری...':'Loading...','وضعیت سرویس: غیرفعال — پایان زمان و حجم سرویس':'Service status: Inactive — time and volume expired','وضعیت سرویس: غیرفعال — پایان حجم سرویس':'Service status: Inactive — volume expired','وضعیت سرویس: غیرفعال — پایان زمان سرویس':'Service status: Inactive — time expired','وضعیت سرویس: غیرفعال — قطع شدن دستی توسط ادمین':'Service status: Inactive — manually disabled by admin','وضعیت سرویس: غیرفعال — قطع تمامی سرویس‌ها':'Service status: Inactive — all services are disabled','وضعیت سرویس: غیرفعال (اتمام ریکوئست)':'Service status: Inactive — request limit reached','آموزش اتصال':'Connection guide','دریافت کانفیگ':'Config download' };
+  function translate(root) {
+    var lang=localStorage.getItem('nexa-admin-lang') || 'fa';
+    document.documentElement.lang=lang; document.documentElement.dir=lang==='fa'?'rtl':'ltr';
+    document.querySelectorAll('[data-public-lang]').forEach(function(b){ b.classList.toggle('active',lang===b.getAttribute('data-public-lang')); });
+    if (lang !== 'en') return;
+    var walker=document.createTreeWalker(root||document.body,NodeFilter.SHOW_TEXT), n;
+    while(n=walker.nextNode()) { var v=n.nodeValue.trim(); if(!v) continue; Object.keys(fa).sort(function(a,b){ return b.length-a.length; }).forEach(function(k){ var cur=n.nodeValue; if(cur===k) n.nodeValue=fa[k]; else if(cur.indexOf(k)>=0) n.nodeValue=cur.split(k).join(fa[k]); }); }
+    document.querySelectorAll('[title]').forEach(function(el){ Object.keys(fa).forEach(function(k){ if(el.title===k) el.title=fa[k]; }); });
+    document.querySelectorAll('input[placeholder],textarea[placeholder]').forEach(function(el){ Object.keys(fa).forEach(function(k){ if(el.placeholder===k) el.placeholder=fa[k]; }); });
+  }
+  window.setNexaPublicLang=function(lang){ lang=(lang==='en'||lang==='fa')?lang:((localStorage.getItem('nexa-admin-lang')||'fa')==='fa'?'en':'fa'); localStorage.setItem('nexa-admin-lang',lang); location.reload(); };
+  document.addEventListener('DOMContentLoaded',function(){ translate(document.body); if((localStorage.getItem('nexa-admin-lang')||'fa')==='en'){ var o=new MutationObserver(function(){translate(document.body);}); o.observe(document.body,{childList:true,subtree:true,characterData:true}); setTimeout(function(){o.disconnect();},5000); } });
+})();
+</script>`;
 const HTML_TEMPLATES = {
   nginx: `<!DOCTYPE html>
 <html>
@@ -8548,38 +8578,7 @@ Commercial support is available at
     </div>
 
     <script>
-        var LOGIN_I18N = {
-            fa: {
-                page_title: 'ورود — Nexa Panel',
-                login_title: 'ورود به Nexa Panel',
-                login_subtitle: 'Nexa Team — برای دسترسی، رمز عبور خود را وارد کنید.',
-                password_label: 'رمز عبور',
-                login_btn: 'ورود',
-                login_checking: 'در حال بررسی...',
-                login_error: '❌ رمز عبور اشتباه است!',
-                server_error: 'خطا در ارتباط با سرور',
-                forgot_pwd_link: 'فراموشی رمز عبور',
-                forgot_pwd_title: 'فراموشی رمز عبور',
-                forgot_pwd_desc: 'اگر به پنل دسترسی دارید، از بخش تنظیمات پنل می‌توانید با وارد کردن رمز فعلی، رمز جدید تنظیم کنید. رمز در متغیر ADMIN (نوع Text) ذخیره می‌شود.',
-                forgot_pwd_hint: 'مسیر: انتخاب ورکر > تنظیمات ورکر > تغیر متغیر ADMIN به رمز دلخواه',
-                forgot_pwd_close: 'متوجه شدم'
-            },
-            en: {
-                page_title: 'Login — Nexa Panel',
-                login_title: 'Login to Nexa Panel',
-                login_subtitle: 'Nexa Team — Enter your password to access the panel.',
-                password_label: 'Password',
-                login_btn: 'Login',
-                login_checking: 'Checking...',
-                login_error: '❌ Incorrect password!',
-                server_error: 'Server connection error',
-                forgot_pwd_link: 'Forgot Password',
-                forgot_pwd_title: 'Forgot Password',
-                forgot_pwd_desc: 'If you have panel access, go to Panel Settings and change your password by entering the current one. Password is stored in the ADMIN variable (Text type).',
-                forgot_pwd_hint: 'Path: Panel > Panel Settings > Change password',
-                forgot_pwd_close: 'Got it'
-            }
-        };
+        var LOGIN_I18N = { fa: { page_title: 'ورود — Nexa Panel', login_title: 'ورود به Nexa Panel', login_subtitle: 'Nexa Team — برای دسترسی، رمز عبور خود را وارد کنید.', password_label: 'رمز عبور', login_btn: 'ورود', login_checking: 'در حال بررسی...', login_error: '❌ رمز عبور اشتباه است!', server_error: 'خطا در ارتباط با سرور', forgot_pwd_link: 'فراموشی رمز عبور', forgot_pwd_title: 'فراموشی رمز عبور', forgot_pwd_desc: 'اگر به پنل دسترسی دارید، از بخش تنظیمات پنل می‌توانید با وارد کردن رمز فعلی، رمز جدید تنظیم کنید. رمز در متغیر ADMIN (نوع Text) ذخیره می‌شود.', forgot_pwd_hint: 'مسیر: انتخاب ورکر > تنظیمات ورکر > تغیر متغیر ADMIN به رمز دلخواه', forgot_pwd_close: 'متوجه شدم' }, en: { page_title: 'Login — Nexa Panel', login_title: 'Login to Nexa Panel', login_subtitle: 'Nexa Team — Enter your password to access the panel.', password_label: 'Password', login_btn: 'Login', login_checking: 'Checking...', login_error: '❌ Incorrect password!', server_error: 'Server connection error', forgot_pwd_link: 'Forgot Password', forgot_pwd_title: 'Forgot Password', forgot_pwd_desc: 'If you have panel access, go to Panel Settings and change your password by entering the current one. Password is stored in the ADMIN variable (Text type).', forgot_pwd_hint: 'Path: Panel > Panel Settings > Change password', forgot_pwd_close: 'Got it' } };
         function loginT(key) {
             var lang = localStorage.getItem('nexa-admin-lang') || 'fa';
             return (LOGIN_I18N[lang] || LOGIN_I18N.fa)[key] || key;
@@ -8990,7 +8989,7 @@ Commercial support is available at
                     <button type="button" onclick="runBulkAction('deactivate')" class="adm-bulk-btn warn" data-i18n="bulk_deactivate">قطع</button>
                     <button type="button" onclick="runBulkAction('reset_volume')" class="adm-bulk-btn" data-i18n="bulk_reset_vol">ریست حجم</button>
                     <button type="button" onclick="runBulkAction('reset_time')" class="adm-bulk-btn" data-i18n="bulk_reset_time">ریست زمان</button>
-                    <button type="button" onclick="runBulkAction('reset_requests')" class="adm-bulk-btn" data-i18n="bulk_reset_req">ریست ریکوئست کل</button>
+                    <button type="button" onclick="runBulkAction('reset_requests')" class="adm-bulk-btn" data-i18n="bulk_reset_req">ریست ریکوئست کل و روزانه</button>
                     <button type="button" onclick="runBulkAction('enable_save')" class="adm-bulk-btn" data-i18n="bulk_save">ذخیره</button>
                     <button type="button" onclick="runBulkAction('delete')" class="adm-bulk-btn danger" data-i18n="bulk_delete">حذف</button>
                 </div>
@@ -9344,11 +9343,6 @@ Commercial support is available at
                 <input type="text" id="wc-sub-page-path" dir="ltr" class="admin-input w-full px-3 py-2.5 text-sm font-mono">
                 <p class="text-xs mt-1.5" style="color: var(--admin-muted)" data-i18n="wc_sub_page_path_hint">مثال : /sub/(اسم سرویس)</p>
             </div>
-            <div>
-                <label class="block text-sm font-medium mb-1.5" style="color: var(--admin-muted)" data-i18n="wc_logs_page_path_label">آدرس صفحه لاگ‌ها</label>
-                <input type="text" id="wc-logs-page-path" dir="ltr" class="admin-input w-full px-3 py-2.5 text-sm font-mono">
-                <p class="text-xs mt-1.5" style="color: var(--admin-muted)" data-i18n="wc_logs_page_path_hint">مثال : /logs/(نام سرویس)</p>
-            </div>
         </div>
         <div id="wc-admin-path-changed-banner" class="hidden text-xs rounded-xl px-3 py-2.5 font-bold" style="background: color-mix(in srgb, #f59e0b 12%, transparent); color: #b45309;"></div>
     </div>
@@ -9382,7 +9376,7 @@ Commercial support is available at
     </div>
     <div class="admin-card p-6">
         <h3 class="text-lg font-black mb-2" style="color: var(--admin-text)" data-i18n="nav_backup">بکاپ پنل</h3>
-        <p class="text-sm mb-2" style="color: var(--admin-muted)" data-i18n="backup_desc">کاربران، تمام تنظیمات پنل، لاگ فعالیت و لاگ اتصال را دانلود یا بازیابی کنید.</p>
+        <p class="text-sm mb-2" style="color: var(--admin-muted)" data-i18n="backup_desc">کاربران، تمام تنظیمات پنل و لاگ فعالیت را دانلود یا بازیابی کنید.</p>
         <p class="text-xs mb-4 rounded-xl px-3 py-2" style="color: var(--admin-muted); background: var(--admin-primary-soft)" data-i18n="backup_includes">تمام بخش های پنل شامل میشود.</p>
         <div class="grid sm:grid-cols-2 gap-4">
             <button type="button" onclick="downloadBackup()" id="backup-download-btn" class="admin-card p-5 flex flex-col items-center gap-3 hover:border-emerald-400 transition">
@@ -9588,8 +9582,8 @@ Commercial support is available at
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"></path></svg>
                     </div>
                     <div>
-                        <h3 id="modal-title" class="adm-um-title">ایجاد کاربر جدید</h3>
-                        <p id="modal-subtitle" class="adm-um-subtitle">تنظیمات سرویس VPN را وارد کنید</p>
+                        <h3 id="modal-title" class="adm-um-title" data-i18n="modal_create_title">ایجاد کاربر جدید</h3>
+                        <p id="modal-subtitle" class="adm-um-subtitle" data-i18n="modal_create_sub">تنظیمات سرویس VPN را وارد کنید</p>
                     </div>
                 </div>
                 <button type="button" onclick="toggleModal(false)" class="adm-um-close" aria-label="بستن">
@@ -9601,35 +9595,35 @@ Commercial support is available at
                 <div class="adm-um-section" id="um-section-basic">
                     <div class="adm-um-section-head">
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
-                        اطلاعات پایه
+                        <span data-i18n="um_basic_info">اطلاعات پایه</span>
                     </div>
                     <div id="um-sys-notice" class="hidden adm-um-sys-notice">
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                        <span>سرویس اصلی همیشه <strong>نامحدود</strong> است. فقط پورت، آیپی تمیز، Fingerprint و Proxy IP قابل تغییر است.</span>
+                        <span data-i18n-html="modal_sys_notice">سرویس اصلی همیشه <strong>نامحدود</strong> است. فقط پورت، آیپی تمیز، Fingerprint و Proxy IP قابل تغییر است.</span>
                     </div>
                     <div class="adm-um-field">
-                        <label for="input-name">نام سرویس</label>
-                        <input type="text" id="input-name" placeholder="مثال: ali" dir="ltr" required>
+                        <label for="input-name" data-i18n="um_username">نام سرویس</label>
+                        <input type="text" id="input-name" placeholder="مثال: ali" data-i18n-placeholder="um_name_placeholder" dir="ltr" required>
                     </div>
                     <div class="adm-um-grid-3" id="um-fields-quota">
                         <div class="adm-um-field" id="um-field-limit">
-                            <label for="input-limit">حجم (GB)</label>
+                            <label for="input-limit" data-i18n="um_volume">حجم (GB)</label>
                             <div class="relative num-stepper">
                                 <div class="num-stepper-controls">
                                     <button type="button" class="num-stepper-btn" data-step="1" aria-label="افزایش"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 15l7-7 7 7"></path></svg></button>
                                     <button type="button" class="num-stepper-btn" data-step="-1" aria-label="کاهش"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M19 9l-7 7-7-7"></path></svg></button>
                                 </div>
-                                <input type="number" id="input-limit" min="0" step="any" placeholder="نامحدود" class="num-stepper-input">
+                                <input type="number" id="input-limit" min="0" step="any" placeholder="نامحدود" data-i18n-placeholder="unlimited" class="num-stepper-input">
                             </div>
                         </div>
                         <div class="adm-um-field" id="um-field-expiry">
-                            <label for="input-expiry">اعتبار (روز)</label>
+                            <label for="input-expiry" data-i18n="um_expiry">اعتبار (روز)</label>
                             <div class="relative num-stepper">
                                 <div class="num-stepper-controls">
                                     <button type="button" class="num-stepper-btn" data-step="1" aria-label="افزایش"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 15l7-7 7 7"></path></svg></button>
                                     <button type="button" class="num-stepper-btn" data-step="-1" aria-label="کاهش"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M19 9l-7 7-7-7"></path></svg></button>
                                 </div>
-                                <input type="number" id="input-expiry" min="0" placeholder="نامحدود" class="num-stepper-input">
+                                <input type="number" id="input-expiry" min="0" placeholder="نامحدود" data-i18n-placeholder="unlimited" class="num-stepper-input">
                             </div>
                         </div>
                         <div class="adm-um-field" id="um-field-max-req">
@@ -9639,7 +9633,7 @@ Commercial support is available at
                                     <button type="button" class="num-stepper-btn" data-step="1" aria-label="افزایش"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 15l7-7 7 7"></path></svg></button>
                                     <button type="button" class="num-stepper-btn" data-step="-1" aria-label="کاهش"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M19 9l-7 7-7-7"></path></svg></button>
                                 </div>
-                                <input type="number" id="input-max-requests" min="0" placeholder="نامحدود" class="num-stepper-input">
+                                <input type="number" id="input-max-requests" min="0" placeholder="نامحدود" data-i18n-placeholder="unlimited" class="num-stepper-input">
                             </div>
                         </div>
                         <div class="adm-um-field" id="um-field-max-req-daily">
@@ -9649,7 +9643,7 @@ Commercial support is available at
                                     <button type="button" class="num-stepper-btn" data-step="1" aria-label="افزایش"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 15l7-7 7 7"></path></svg></button>
                                     <button type="button" class="num-stepper-btn" data-step="-1" aria-label="کاهش"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M19 9l-7 7-7-7"></path></svg></button>
                                 </div>
-                                <input type="number" id="input-max-requests-daily" min="0" placeholder="نامحدود" class="num-stepper-input">
+                                <input type="number" id="input-max-requests-daily" min="0" placeholder="نامحدود" data-i18n-placeholder="unlimited" class="num-stepper-input">
                             </div>
                         </div>
                     </div>
@@ -9657,37 +9651,37 @@ Commercial support is available at
                 <div class="adm-um-section">
                     <div class="adm-um-section-head">
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"></path></svg>
-                        پورت‌های اتصال
+                        <span data-i18n="um_ports">پورت‌های اتصال</span>
                     </div>
                     <div class="adm-um-ports-group">
-                        <div class="adm-um-ports-label tls"><span class="dot"></span> پورت‌های امن (TLS)</div>
+                        <div class="adm-um-ports-label tls"><span class="dot"></span> <span data-i18n="um_ports_tls">پورت‌های امن (TLS)</span></div>
                         <div class="grid grid-cols-3 sm:grid-cols-4 gap-2" id="tls-ports-list"></div>
                     </div>
                     <div class="adm-um-ports-group">
-                        <div class="adm-um-ports-label nontls"><span class="dot"></span> پورت‌های معمولی (Non-TLS)</div>
+                        <div class="adm-um-ports-label nontls"><span class="dot"></span> <span data-i18n="um_ports_nontls">پورت‌های معمولی (Non-TLS)</span></div>
                         <div class="grid grid-cols-3 sm:grid-cols-4 gap-2" id="nontls-ports-list"></div>
                     </div>
                 </div>
                 <div class="adm-um-section">
                     <div class="adm-um-section-head">
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"></path></svg>
-                        تنظیمات پیشرفته
+                        <span data-i18n="um_advanced">تنظیمات پیشرفته</span>
                     </div>
                     <div class="adm-um-field">
                         <div class="flex items-center justify-between mb-1">
-                            <label for="input-ips">آیپی تمیز </label>
+                            <label for="input-ips" data-i18n="um_clean_ip">آیپی تمیز </label>
                             <div class="adm-um-ip-btns">
                                 <button type="button" onclick="openIpSelectorModal()" class="adm-um-ip-btn" data-i18n="um_ip_pool">دریافت ایپی تمیز از سرور</button>
                                 <button type="button" onclick="applyScannerPoolIps()" class="adm-um-ip-btn" data-i18n="um_scanner_pool">استفاده از مخزن اسکنر پنل</button>
                             </div>
                         </div>
-                        <textarea id="input-ips" rows="2" placeholder="میتوانید ایپی تمیز خود را از مخزن پنل یا از سرور ما دریافت کنید" dir="ltr"></textarea>
+                        <textarea id="input-ips" rows="2" placeholder="میتوانید ایپی تمیز خود را از مخزن پنل یا از سرور ما دریافت کنید" data-i18n-placeholder="um_clean_ip_placeholder" dir="ltr"></textarea>
                     </div>
                     <div class="adm-um-field" id="um-field-fingerprint">
-                        <label for="fingerprint-select">Fingerprint </label>
+                        <label for="fingerprint-select" data-i18n="um_fingerprint">Fingerprint </label>
                         <select id="fingerprint-select">
-                            <option value="chrome" selected>Chrome — پیش‌فرض</option>
-                            <option value="randomized">Randomized (پویا)</option>
+                            <option value="chrome" selected>Chrome — Default</option>
+                            <option value="randomized">Randomized</option>
                             <option value="firefox">Firefox</option>
                             <option value="safari">Safari</option>
                             <option value="ios">iOS Device</option>
@@ -9699,16 +9693,16 @@ Commercial support is available at
                     </div>
                     <div class="adm-um-field">
                         <label for="input-proxy-ip">
-                            Proxy IP اختصاصی (اختیاری)
+                            <span data-i18n="um_proxy_ip">Proxy IP اختصاصی (اختیاری)</span>
                         </label>
-                        <textarea id="input-proxy-ip" rows="2" placeholder="در صورت خالی گذاشتن از ایپی پروکسی پنل استفاده میشود." dir="ltr"></textarea>
-                        <p class="adm-um-hint">اگر خالی باشد، هنگام اتصال از پول CDN پیش‌فرض پنل استفاده می‌شود.</p>
+                        <textarea id="input-proxy-ip" rows="2" placeholder="در صورت خالی گذاشتن از ایپی پروکسی پنل استفاده میشود." data-i18n-placeholder="um_proxy_placeholder" dir="ltr"></textarea>
+                        <p class="adm-um-hint" data-i18n="um_proxy_hint">اگر خالی باشد، هنگام اتصال از پول CDN پیش‌فرض پنل استفاده می‌شود.</p>
                     </div>
                 </div>
                 </div>
                 <div class="adm-um-footer">
-                    <button type="button" onclick="toggleModal(false)" class="adm-um-btn-cancel">انصراف</button>
-                    <button type="submit" id="submit-btn" class="adm-um-btn-submit">ایجاد کاربر</button>
+                    <button type="button" onclick="toggleModal(false)" class="adm-um-btn-cancel" data-i18n="cancel">انصراف</button>
+                    <button type="submit" id="submit-btn" class="adm-um-btn-submit" data-i18n="create_user">ایجاد کاربر</button>
                 </div>
             </form>
         </div>
@@ -9981,13 +9975,13 @@ Commercial support is available at
                     if (action === 'toggle-status') toggleUserStatus(enc);
                     else if (action === 'reset-volume') resetUserService(enc, 'volume');
                     else if (action === 'reset-time') resetUserService(enc, 'time');
+                    else if (action === 'reset-requests') resetUserService(enc, 'requests');
                     else if (action === 'save') toggleSaveUser(enc);
                     else if (action === 'delete') deleteUser(enc);
                     else if (action === 'edit') editUser(enc);
                     else if (action === 'copy-sub') copySubLink(enc);
                     else if (action === 'sub-qr') showSubQR(enc);
                     else if (action === 'status') openStatusPage(enc);
-                    else if (action === 'logs') openLogsPage(enc);
                     return;
                 }
                 if (e.target.closest('.adm-users-add-btn')) {
@@ -10501,1075 +10495,7 @@ Commercial support is available at
                 if (e.key === 'Escape') toggleAdminSidebar(false);
             });
         }
-        const ADMIN_I18N = {
-          fa: {
-          nav_main:'منوی اصلی',
-          nav_dashboard:'داشبورد',
-          nav_users:'مدیریت کاربران',
-          nav_guide:'آموزش اتصال',
-          nav_node_server:'سرور نود',
-          nav_ip_scanner:'اسکنر IP تمیز',
-          nav_cdn_proxy:'پروکسی CDN',
-          nav_logs:'لاگ فعالیت',
-          nav_wireguard:'سرویس WireGuard',
-          nav_warp:'سرویس WARP',
-          nav_settings:'تنظیمات پنل',
-          nav_panel_control:'کنترل پنل',
-          nav_update_panel:'به‌روزرسانی پنل',
-          nav_about:'درباره ما',
-          nav_backup:'بکاپ پنل',
-          nav_tg_channel:'کانال تلگرام Nexa',
-          nav_tg_bot:'بات پشتیبانی Nexa',
-          nav_collapse:'جمع کردن منو',
-          nav_expand:'باز کردن',
-          nav_logout:'خروج',
-          panel_version:'نسخه ${PANEL_VERSION}',
-          panel_subtitle:'پنل مدیریت',
-          aria_menu:'منو',
-          aria_collapse:'جمع کردن منو',
-          aria_close:'بستن',
-          theme_toggle:'تغییر تم',
-          dash_sub_title:'لینک اشتراک اصلی',
-          dash_manage_btn:'برای مدیریت این سرویس کلیک کنید',
-          dash_copy_sub:'کپی اشتراک',
-          node_server_title:'نود اصلی',
-          node_server_desc:'نود شما روی همه‌ی پورت‌های TLS کلودفلر، با استفاده‌ی مستقیم از دامنه‌ی ورکر، جدا از اشتراک، هر پورت را کپی کنید.',
-          node_server_empty:'کانفیگ نودی در دسترس نیست',
-          node_server_copy:'کپی',
-          node_server_qr:'QR',
-          dash_worker_usage:'مصرف ریکوئست Worker',
-          dash_reset_label:'ریست ساعت:',
-          dash_reset_meta:'ریست ریکوئست‌ها در ساعت 3:30 به وقت تهران',
-          dash_top_req_title:'بیشترین مصرف ریکوئست کل',
-          dash_top_req_empty:'هنوز مصرفی ثبت نشده',
-          dash_ip_title:'مشخصات IP شما',
-          dash_via_server:'از طریق این سرور',
-          dash_direct_ip:'IP مستقیم (بدون پروکسی)',
-          dash_city:'شهر',
-          dash_region:'منطقه',
-          dash_country:'کشور',
-          dash_fetching_loc:'در حال دریافت موقعیت...',
-          dash_click_refresh:'برای دریافت، بروزرسانی را بزنید',
-          dash_loading_map:'در حال بارگذاری نقشه...',
-          dash_zoom_map:'بزرگ‌نمایی',
-          dash_map_via_server:'نقشه: از طریق سرور',
-          dash_map_direct:'نقشه: IP مستقیم',
-          dash_updating:'در حال بروزرسانی...',
-          ip_scanner_desc:'سریع‌ترین آی‌پی‌های تمیز کلودفلر را برای شبکه‌تان پیدا کنید',
-          ip_scan_total:'تعداد ایپی مورد نظر برای تست',
-          ip_scan_keep:'انتخاب بهترین ایپی ',
-          ip_scan_ports_label:'پورت‌های اسکن',
-          ip_scan_ports_required:'حداقل یک پورت انتخاب کنید',
-          ip_scan_start:'شروع اسکن',
-          ip_scan_results:'نتایج آی‌پی تمیز',
-          cdn_cf_banner_text:'برای بروزرسانی خودکار و نمایش «مصرف ورکر»، یک‌بار توکن Cloudflare را وصل کن، کمتر از یک دقیقه.',
-          cdn_cf_connect:'اتصال توکن',
-          cdn_access_title:'دسترسی CDN کلودفلر',
-          cdn_access_desc:'از بخش یافتن پروکسی میتوانید پروکسی ایپی مد نظر خود را دریافت کنید.',
-          cdn_mode_label:'حالت',
-          cdn_proxyip_label:'آدرس PROXYIP',
-          cdn_proxyip_hint:'هر خط = یک لوکیشن. اگه می‌خوای پرچم کشورش هم توی اسم کانفیگ بیاد، انتهای اون خط بنویس <code>#کدکشور</code> (مثال: <code>1.2.3.4#DE</code> یا <code>5.6.7.8:2053#US</code>)',
-          cdn_chain_label:'آدرس پروکسی',
-          cdn_chain_hint:'هر پروکسی در یک خط. یکی = IP ثابت؛ دو تا سه = چرخش و جایگزینی خودکار.',
-          cdn_rotate_label:'چرخش خودکار',
-          cdn_rotate_off:'خاموش — همه',
-          cdn_rotate_daily:'روزانه',
-          cdn_rotate_weekly:'هفتگی',
-          cdn_rotate_count:'تعداد فعال',
-          cdn_rotate_hint:'با چند پروکسی، هر روز/هفته زیرمجموعه‌ای متفاوت ارائه می‌شود.',
-          cdn_verify:'بررسی',
-          cdn_save:'ذخیره',
-          cdn_finder_title:'یافتن پروکسی',
-          cdn_finder_load:'دریافت فهرست',
-          cdn_finder_desc:'شما میتوانید با لود فهرست ها از پروکسی 68 کشور استفاده کنید. ',
-          cdn_country_label:'کشور',
-          cdn_pick_label:'پروکسی',
-          cdn_use_selected:'استفاده از انتخاب',
-          cdn_proxy_saved:'تنظیمات پروکسی CDN ذخیره شد',
-          cdn_proxy_fetching:'در حال دریافت فهرست...',
-          cdn_proxy_list_ok:'فهرست دریافت شد',
-          cdn_proxy_list_stats:'{proxies} پروکسی — {countries} کشور',
-          cdn_proxy_use_ok:'پر شد — اکنون ذخیره کنید',
-          cdn_proxy_verify_proxyip:'PROXYIP نیاز به تست جدا ندارد — هنگام اتصال خودکار بررسی می‌شود. فقط ذخیره کنید.',
-          cdn_proxy_verify_ok:'پروکسی در دسترس است',
-          cdn_proxy_verify_fail:'پاسخی دریافت نشد',
-          cdn_proxy_enter_first:'ابتدا آدرس پروکسی را وارد کنید',
-          ip_scan_copy:'کپی نتایج',
-          ip_scan_save_pool:'ذخیره در مخزن پنل',
-          ip_scan_foot:'اسکن کاملاً در مرورگر شما انجام می‌شود',
-          ip_scan_prep:'در حال آماده‌سازی…',
-          ip_scan_testing:'در حال تست…',
-          ip_scan_alive:' سالم',
-          ip_scan_none:'هیچ IP سالمی پیدا نشد',
-          ip_scan_found:' IP تمیز پیدا شد',
-          ip_scan_saved_pool:'در مخزن پنل ذخیره شد',
-          ip_scan_pool_empty:'مخزن اسکنر پنل خالی است',
-          ip_scan_pool_applied:'آی‌پی‌های مخزن اسکنر اعمال شد',
-          ip_scan_copied:'نتایج کپی شد',
-          ip_scan_pool_count:'مخزن پنل: {count} آی‌پی',
-          ip_scan_pool_title:'مخزن پنل',
-          ip_scan_pool_desc:'مدیریت آی‌پی‌های ذخیره‌شده در مخزن پنل',
-          ip_scan_source_title:'منبع آی‌پی تمیز',
-          ip_scan_source_smart:'هوشمند',
-          ip_scan_source_pool:'مخزن ایپی تمیز',
-          ip_scan_smart_desc:'در حالت هوشمند، آی‌پی‌های تمیز از لینک زیر دریافت می‌شوند:',
-          ip_scan_auto_saved:'نتایج اسکن در مخزن ذخیره شد',
-          ip_scan_pool_textarea_ph:'هر خط یک IP — مثال: 1.2.3.4 یا 1.2.3.4:443',
-          ip_scan_pool_save:'ذخیره مخزن',
-          ip_scan_pool_clear:'پاک کردن همه',
-          ip_scan_pool_saved:'مخزن ذخیره شد',
-          ip_scan_pool_cleared:'مخزن پاک شد',
-          ip_scan_pool_remove:'حذف',
-          ip_scan_pool_max:'حداکثر ۵۰ آی‌پی در مخزن مجاز است',
-          ip_scan_pool_clear_confirm:'همه آی‌پی‌های مخزن پاک شوند؟',
-          ip_scan_server_title:'ایپی تمیز سرور',
-          ip_scan_server_desc:'لیست آی‌پی‌های دریافتی از /clean-ip',
-          ip_scan_server_operator:'اپراتور',
-          ip_scan_server_all:'همه',
-          ip_scan_server_refresh:'بروزرسانی',
-          ip_scan_server_copy:'کپی',
-          ip_scan_server_loading:'در حال بارگذاری…',
-          ip_scan_server_empty:'لیست خالی است',
-          dash_load_error:'خطا در بارگذاری داشبورد',
-          dash_loc_not_found:'موقعیت دقیق یافت نشد',
-          dash_ip_not_found:'IP یافت نشد',
-          dash_map_unavailable:'نقشه در دسترس نیست',
-          dash_map_no_coords:'موقعیت تقریبی روی نقشه در دسترس نیست',
-          dash_direct_fetch_fail:'دریافت IP مستقیم ناموفق بود',
-          dash_direct_ip_not_found:'IP مستقیم یافت نشد',
-          dash_direct_error:'خطا در دریافت IP مستقیم',
-          dash_direct_not_received:'IP مستقیم دریافت نشد',
-          dash_main_user_not_found:'کاربر اصلی یافت نشد',
-          stat_total:'کل کاربران',
-          stat_online:'آنلاین',
-          stat_inactive:'غیرفعال',
-          stat_expired:'منقضی',
-          users_loading:'در حال بارگذاری کاربران...',
-          search_placeholder:'جستجوی با نام سرویس ...',
-          filter_all:'همه',
-          filter_active:'فعال',
-          filter_inactive:'غیرفعال',
-          filter_online:'آنلاین',
-          filter_offline:'آفلاین',
-          filter_expired:'منقضی / تمام شده',
-          sort_newest:'جدیدترین',
-          sort_name:'نام کاربری (الفبا)',
-          sort_usage_desc:'بیشترین مصرف',
-          sort_usage_asc:'کمترین مصرف',
-          sort_expiry_asc:'کمترین زمان باقی‌مانده',
-          bulk_selected:'{n} سرویس انتخاب شده',
-          bulk_deselect:'لغو انتخاب',
-          bulk_edit:'ویرایش گروهی',
-          bulk_activate:'فعال',
-          bulk_deactivate:'قطع',
-          bulk_reset_vol:'ریست حجم',
-          bulk_reset_time:'ریست زمان',
-          bulk_reset_req:'ریست ریکوئست کل',
-          bulk_save:'ذخیره',
-          bulk_delete:'حذف',
-          users_list_title:'لیست کاربران',
-          users_list_desc:'مدیریت سرویس ها',
-          select_all:'انتخاب همه',
-          new_user:'کاربر جدید',
-          add_user:'افزودن کاربر',
-          th_user_ops:'نام کاربر و عملیات',
-          th_sub_link:'لینک ساب',
-          th_protocol:'پروتکل',
-          th_port:'پورت',
-          th_volume:'وضعیت حجم',
-          th_expiry:'وضعیت اعتبار',
-          th_requests:'مصرف ریکوئست',
-          th_created:'تاریخ ساخت',
-          empty_no_users:'کاربری وجود ندارد',
-          empty_create_hint:'برای ساخت اولین کاربر روی «کاربر جدید» کلیک کنید',
-          empty_no_results:'نتیجه‌ای یافت نشد',
-          empty_no_match:'کاربری با مشخصات جستجو شده پیدا نشد',
-          badge_main_service:'سرویس اصلی',
-          badge_online:'● آنلاین',
-          badge_offline:'آفلاین',
-          badge_expired:'منقضی',
-          badge_vol_done:'حجم تمام',
-          badge_time_done:'زمان تمام',
-          badge_disabled:'قطع',
-          badge_active:'فعال',
-          badge_temp:'موقت',
-          btn_sub_link:'لینک ساب',
-          btn_status:'وضعیت',
-          btn_logs:'لاگ',
-          btn_edit:'ویرایش',
-          btn_delete:'حذف',
-          btn_qr_sub:'qrcode اشتراک',
-          btn_qr_sub_link:'qrcode لینک ساب',
-          usage_label:'مصرف:',
-          total_label:'کل:',
-          remaining_label:'باقی‌مانده:',
-          unlimited:'نامحدود',
-          days_unit:'روز',
-          activate_user:'فعال کردن کاربر',
-          deactivate_user:'قطع کردن کاربر',
-          reset_vol_title:'ریست حجم سرویس',
-          reset_time_title:'ریست زمان سرویس',
-          save_enabled:'ذخیره شده — حذف خودکار غیرفعال',
-          save_disabled:'ذخیره (جلوگیری از حذف خودکار پس از انقضا)',
-          guide_tab_android:'اندروید',
-          guide_tab_ios:'آیفون',
-          guide_tab_desktop:'ویندوز / مک',
-          usage_warn_title:'هشدار محدودیت درخواست روزانه',
-          usage_warn_body:'درخواست‌های امروز کلودفلر شما از مرز ۹۰,۰۰۰ عبور کرده است. در صورت عبور از محدودیت رایگان ۱۰۰,۰۰۰ درخواست، دسترسی به پنل و اتصالات تا ساعت ۳:۳۰ بامداد (به وقت ایران) قطع خواهد شد.',
-          usage_warn_ok:'متوجه شدم',
-          modal_create_title:'ایجاد کاربر جدید',
-          modal_create_sub:'تنظیمات سرویس VPN را وارد کنید',
-          modal_edit_title:'ویرایش کاربر',
-          modal_edit_sub:'ویرایش تنظیمات «{name}»',
-          modal_sys_title:'مدیریت سرویس اصلی',
-          modal_sys_sub:'فقط پورت، آیپی تمیز و Proxy IP',
-          modal_sys_notice:'سرویس اصلی همیشه <strong>نامحدود</strong> است. فقط پورت، آیپی تمیز و Proxy IP قابل تغییر است.',
-          um_basic_info:'اطلاعات پایه',
-          um_username:'نام سرویس',
-          um_volume:'حجم (GB)',
-          um_expiry:'اعتبار (روز)',
-          um_max_conn:'ریکوئست کل',
-          um_max_req_daily:'ریکوئست روزانه',
-          um_ports:'پورت‌های اتصال',
-          um_ports_tls:'پورت‌های امن (TLS)',
-          um_ports_nontls:'پورت‌های معمولی (Non-TLS)',
-          um_advanced:'تنظیمات پیشرفته',
-          um_clean_ip:'آیپی تمیز ',
-          um_ip_pool:'دریافت ایپی تمیز از سرور',
-          um_scanner_pool:'استفاده از مخزن اسکنر پنل',
-          um_fingerprint:'Fingerprint ',
-          um_proxy_ip:'Proxy IP اختصاصی (اختیاری)',
-          um_proxy_hint:'اگر خالی باشد، هنگام اتصال از پول CDN پیش‌فرض پنل استفاده می‌شود.',
-          um_proxy_placeholder:'خالی = استفاده از پروکسی پنل',
-          um_name_placeholder:'مثال: ali',
-          fp_random:'Random (اتفاقی) — پیش‌فرض',
-          fp_randomized:'Randomized (پویا)',
-          cancel:'انصراف',
-          create_user:'ایجاد کاربر',
-          save_changes:'ذخیره تغییرات',
-          save_settings:'ذخیره تنظیمات',
-          creating:'در حال ایجاد...',
-          saving:'در حال ذخیره تغییرات...',
-          applying:'در حال اعمال...',
-          bulk_edit_title:'ویرایش گروهی',
-          bulk_apply:'اعمال روی انتخاب‌شده‌ها',
-          bulk_clean_ip:'آیپی تمیز',
-          bulk_ip_pool:'مخزن آیپی',
-          ip_pool_title:'دریافت ایپی تمیز و دامنه پشت کلادفلر',
-          ip_operator:'اوپراتور',
-          ip_count:'تعداد',
-          ip_fetch:'دریافت',
-          qr_scan:'اسکن کد QR',
-          map_title:'نقشه موقعیت تقریبی',
-          close:'بستن',
-          confirm_title:'تأیید عملیات',
-          confirm_ok:'تأیید',
-          confirm_cancel:'انصراف',
-          confirm_yes:'بله، انجام شود',
-          confirm_yes_delete:'بله، حذف شود',
-          confirm_yes_reset:'بله، ریست شود',
-          confirm_yes_restore:'بله، بازیابی شود',
-          confirm_yes_logout:'بله، خروج',
-          toast_select_service:'ابتدا حداقل یک سرویس را انتخاب کنید',
-          toast_no_selected:'هیچ سرویسی انتخاب نشده است',
-          toast_select_field:'حداقل یک فیلد را برای اعمال انتخاب کنید',
-          toast_select_port:'حداقل یک پورت انتخاب کنید',
-          toast_bulk_done:'عملیات گروهی روی {n} سرویس انجام شد',
-          toast_bulk_edit_done:'ویرایش گروهی روی {n} سرویس انجام شد',
-          toast_bulk_fail:'خطا در عملیات گروهی',
-          toast_bulk_edit_fail:'خطا در ویرایش گروهی',
-          toast_op_fail:'عملیات ناموفق بود',
-          toast_sys_always_saved:'سرویس اصلی همیشه ذخیره است',
-          toast_sys_status_locked:'وضعیت سرویس اصلی قابل تغییر نیست',
-          toast_sys_reset_locked:'ریست حجم یا زمان سرویس اصلی مجاز نیست',
-          toast_sys_no_delete:'این کاربر سیستمی است و قابل حذف نیست',
-          toast_sub_copied:'لینک ساب با موفقیت کپی شد',
-          toast_sub_copy_fail:'خطا در کپی کردن لینک ساب',
-          toast_node_copied:'کانفیگ نود کپی شد',
-          toast_node_copy_fail:'خطا در کپی کانفیگ نود',
-          toast_user_deleted:'کاربر با موفقیت حذف شد',
-          toast_user_not_found:'کاربر یافت نشد!',
-          toast_conn_error:'خطا در برقراری ارتباط با سرور',
-          toast_tg_saved:'تنظیمات تلگرام ذخیره شد',
-          toast_save_fail:'خطا در ذخیره',
-          toast_logs_cleared:'لاگ‌ها حذف شدند',
-          toast_logs_load_fail:'خطا در بارگذاری لاگ‌ها',
-          toast_backup_restored:'بکاپ با موفقیت بازیابی شد ({n} کاربر)',
-          toast_backup_fail:'خطا در بازیابی',
-          toast_backup_download_fail:'خطا در دریافت بکاپ',
-          toast_reset_vol_ok:'ریست {type} با موفقیت انجام شد',
-          toast_reset_vol:'حجم',
-          toast_reset_time:'زمان',
-          bulk_confirm_title:'عملیات گروهی',
-          bulk_confirm_msg:'آیا از «{action}» مطمئن هستید؟',
-          bulk_delete_n:'حذف {n} سرویس',
-          bulk_activate_n:'فعال‌سازی {n} سرویس',
-          bulk_deactivate_n:'قطع {n} سرویس',
-          bulk_reset_vol_n:'ریست حجم {n} سرویس',
-          bulk_reset_time_n:'ریست زمان {n} سرویس',
-          bulk_reset_req_n:'ریست ریکوئست کل {n} سرویس',
-          bulk_enable_save_n:'فعال‌سازی ذخیره برای {n} سرویس',
-          reset_confirm_title:'ریست سرویس',
-          reset_confirm_msg:'آیا از ریست {type} سرویس کاربر «{name}» مطمئن هستید؟',
-          delete_user_title:'حذف کاربر',
-          delete_user_msg:'آیا از حذف کاربر «{name}» مطمئن هستید؟',
-          restore_confirm_title:'بازیابی بکاپ',
-          restore_confirm_msg:'با بازیابی بکاپ، تمام کاربران و تنظیمات فعلی جایگزین می‌شوند. ادامه می‌دهید؟',
-          clear_logs_confirm:'آیا از حذف همه لاگ‌های پنل مطمئن هستید؟',
-          clear_logs_title:'حذف لاگ‌ها',
-          logout_confirm:'آیا می‌خواهید از پنل خارج شوید؟',
-          logout_title:'خروج از پنل',
-          alert_select_port:'⚠️ لطفا حداقل یک پورت را برای اتصال انتخاب کنید!',
-          alert_error:'خطا: {msg}',
-          users_load_error:'خطا در دریافت اطلاعات از سرور',
-          users_parse_error:'خطا در پردازش اطلاعات کاربران',
-          update_title:'به‌روزرسانی پنل',
-          update_msg:'در حال دریافت و نصب نسخه جدید...',
-          update_available_title:'به‌روزرسانی موجود است',
-          update_available_msg:'نسخه جدید {remote} در دسترس است.\\nنسخه فعلی پنل شما: {current}',
-          update_later:'بعداً',
-          update_complete:'اپدیت با موفقیت انجام شد',
-          update_complete_reload:'در حال بارگذاری مجدد پنل...',
-          update_failed:'خطا در به‌روزرسانی',
-          update_failed_msg:'به‌روزرسانی پنل انجام نشد.',
-          update_cf_token_redirect:'توکن CF_TOKEN معتبر نیست. در حال انتقال به صفحه راه‌اندازی...',
-          panel_update_title:'به‌روزرسانی پنل',
-          panel_update_desc:'نسخه جدید از سرور دریافت و پنل شما اپدیت و ویژگی های جدید اضافه خواهد شد.',
-          panel_update_current:'نسخه فعلی',
-          panel_update_remote:'نسخه سرور',
-          panel_update_btn:'به‌روزرسانی پنل',
-          panel_update_confirm:'نسخه جدید از سرور مدیریت دریافت و روی ورکر شما نصب می‌شود. ادامه می‌دهید؟',
-          panel_update_available:'نسخه {remote} موجود است — نسخه فعلی شما {current}',
-          panel_update_latest:'پنل شما به‌روز است.',
-          increase:'افزایش',
-          decrease:'کاهش',
-          cf_token_required:'توکن API کلودفلر را وارد کنید',
-          reset_panel_fail:'خطا در بازنشانی پنل',
-          reset_panel_yes:'بله، بازنشانی شود',
-          about_kicker:'تیم توسعه‌ی زیرساخت آزاد',
-          about_hero_title:'عبور از فیلترینگ، با پنل خودت',
-          about_hero_desc:'NEXA گروهی از توسعه‌دهنده‌هاست که ابزارهای متن‌باز برای دسترسی آزاد به اینترنت می‌سازد — روی زیرساخت Cloudflare Workers، بدون واسطه، بدون فروش کانفیگ، و کاملاً در اختیار خودت.',
-          about_kicker2:'درباره‌ی نکسا',
-          about_title:'پنل شخصی، بدون واسطه و هزینه',
-          about_desc:'NEXA به جای فروش سرویس، ابزار عمومی در اختیار می‌گذارد. هرکسی می‌تواند در چند دقیقه، روی اکانت Cloudflare خودش، پنل مدیریت اتصال شخصی‌اش را بالا بیاورد؛ سریع، پایدار و بدون نیاز به اعتماد به یک سرور واسط.',
-          about_f1_title:'متن‌باز و شفاف',
-          about_f1_desc:'کد پنل کاملاً قابل مشاهده است؛ هرچه در پنل اجرا می‌شود را می‌توانی پیش از استفاده بررسی کنی.',
-          about_f2_title:'زیرساخت خودت',
-          about_f2_desc:'پنل روی حساب Cloudflare شخصی تو اجرا می‌شود؛ داده‌ها و اتصال‌ها از کانال هیچ سرور واسطی عبور نمی‌کند.',
-          about_f3_title:'راه‌اندازی سریع',
-          about_f3_desc:'در کمتر از پنج دقیقه، بدون دانش عمیق برنامه‌نویسی، پنل شخصی‌ات آماده و در دسترس است.',
-          about_f4_title:'بدون قصد فروش',
-          about_f4_desc:'هدف NEXA آموزش و در دسترس گذاشتن ابزار است، نه فروش کانفیگ یا اشتراک اینترنت.',
-          about_social:'ما را در شبکه‌های اجتماعی دنبال کنید',
-          about_social_desc:'آموزش‌ها، به‌روزرسانی‌ها و اخبار تیم NEXA را از یوتیوب و تلگرام دنبال کن.',
-          tg_notify_title:'اعلان‌های تلگرام',
-          tg_enable:'فعال‌سازی اعلان تلگرام',
-          tg_token:'توکن ربات',
-          tg_chat_id:'شناسه چت / کاربر',
-          tg_chat_hint:'برای دریافت شناسه چت خود به بات ما مراجعه کنید و ایدی عددی خود را دریافت کنید . ادرس بات : <a href="https://t.me/nexateam_bot" target="_blank" rel="noopener noreferrer">https://t.me/nexateam_bot</a>',
-          tg_status_on:'روشن',
-          tg_status_off:'خاموش',
-          save:'ذخیره',
-          save_success:'تنظیمات با موفقیت ذخیره شد',
-          logs_desc:'تمام رویدادهای مهم پنل',
-          refresh:'بروزرسانی',
-          clear_logs:'حذف همه',
-          loading:'در حال بارگذاری...',
-          logs_empty:'هنوز رویدادی ثبت نشده است.',
-          col_time:'زمان',
-          col_action:'عملیات',
-          col_details:'جزئیات',
-          backup_desc:'کاربران، تمام تنظیمات پنل، لاگ فعالیت و لاگ اتصال را دانلود یا بازیابی کنید.',
-          backup_download:'دریافت بکاپ',
-          backup_upload:'بارگذاری بکاپ',
-          backup_includes:'تمام بخش های پنل شامل میشود.',
-          backup_auto_title:'بکاپ خودکار روزانه',
-          backup_auto_desc:'هر روز ساعت ۰۰:۰۰ (به وقت تهران) بکاپ کامل به تلگرام ارسال می‌شود — نیاز به تنظیم توکن و شناسه چت در بخش لاگ فعالیت دارد.',
-          backup_tg_hint:'برای ارسال بکاپ، ابتدا توکن ربات و شناسه چت را در بخش «لاگ فعالیت» تنظیم کنید.',
-          backup_cron_hint:'برای اجرای دقیق ساعت ۰۰:۰۰، در Cloudflare Workers یک Cron Trigger با مقدار 30 20 * * * اضافه کنید. (اگر پنل را با سایت یا ربات ساختید نیاز به تنظیم نیست .)',
-          backup_tg_send:'ارسال بکاپ به تلگرام (تست)',
-          backup_last_run:'آخرین بکاپ خودکار',
-          backup_last_never:'هنوز اجرا نشده',
-          backup_tg_sent:'بکاپ با موفقیت به تلگرام ارسال شد',
-          backup_tg_fail:'خطا در ارسال بکاپ به تلگرام',
-          backup_auto_saved:'تنظیمات بکاپ خودکار ذخیره شد',
-          reset_panel_title:'بازنشانی تمام تنظیمات',
-          reset_panel_desc:'تمام کاربران، تنظیمات پروکسی، اعلان تلگرام و لاگ‌ها حذف می‌شوند. پنل مانند اولین ورود خواهد بود. رمز عبور مدیریت حفظ می‌شود.',
-          reset_panel_btn:'بازنشانی تمام تنظیمات',
-          reset_panel_confirm:'با بازنشانی، تمام کاربران (به‌جز سرویس اصلی)، تنظیمات و لاگ‌ها حذف می‌شوند. این عمل قابل بازگشت نیست. ادامه می‌دهید؟',
-          reset_panel_success:'پنل با موفقیت بازنشانی شد',
-          pwd_info_title:'تغییر رمز عبور مدیریت',
-          pwd_storage_note:'رمز عبور در متغیر ADMIN (نوع Text) در Cloudflare Workers ذخیره می‌شود.',
-          pwd_current_label:'رمز عبور فعلی',
-          pwd_new_label:'رمز عبور جدید',
-          pwd_confirm_label:'تکرار رمز جدید',
-          pwd_change_btn:'تغییر رمز عبور',
-          pwd_change_success:'رمز عبور با موفقیت تغییر کرد',
-          cf_creds_title:'تنظیمات Cloudflare API',
-          cf_creds_note:'فقط CF_TOKEN را وارد کنید — Account ID خودکار از توکن دریافت و در ورکر ذخیره می‌شود.',
-          cf_token_label:'CF_TOKEN',
-          cf_ac_id_label:'Account ID',
-          cf_ac_id_auto_hint:'نیازی به وارد کردن دستی نیست',
-          cf_creds_save:'ذخیره توکن',
-          cf_creds_success:'توکن با موفقیت ذخیره شد',
-          cf_token_hint_set:'توکن فعلی تنظیم شده — برای تغییر، توکن جدید وارد کنید',
-          panel_control_restart_title:'ری‌استارت پنل',
-          panel_control_restart_desc:'شمارشگر آپتایم و کش‌های موقت داخلی ورکر پاک‌سازی می‌شود. کاربران و تنظیمات شما دست‌نخورده باقی می‌مانند.',
-          panel_control_restart_btn:'ری‌استارت پنل',
-          panel_control_disable_label:'خاموش کردن پنل مدیریت',
-          panel_control_disable_desc:'با فعال شدن این گزینه، صفحه ورود و پنل مدیریت برای همه غیرقابل دسترسی می‌شود و صفحه وضعیت Nexa نمایش داده می‌شود. سرویس‌های VPN فعال باقی می‌مانند. برای بازگشت، آدرس را با <code dir="ltr">?unlock=1</code> باز کنید (مثال: <code dir="ltr">/admin?unlock=1</code>).',
-          kill_all_services_label:'قطع تمامی سرویس‌ها',
-          kill_all_services_label:'قطع تمامی سرویس‌ها',
-          kill_all_services_desc:'با روشن شدن این گزینه تمامی سرویس‌ها متوقف و قطع خواهند شد در صورتی که مورد سو استفاده قرار گرفتید این گزینه را روشن کنید و با عوض کردن ادرس ها پنل خود را امن کنید .',
-          kill_all_services_on:'تمامی سرویس‌ها قطع شدند',
-          kill_all_services_off:'سرویس‌ها مجدداً فعال شدند',
-          proxy_save_base:'تنظیمات Proxy IP ذخیره شد',
-          proxy_change_labels:{proxy_ips:'آدرس‌های Proxy IP (CDN)'},
-          proxy_ips_label:'آدرس‌های Proxy IP (CDN)',
-          proxy_ips_hint:'خالی = استفاده از پول CDN پیش‌فرض (در صورت خالی گذاشتن از ایپی پروکسی پنل استفاده میشود. و ...)',
-          blocked_domains_title:'مسدودسازی دامنه',
-          blocked_domains_desc:'دامنه‌هایی که وارد کنید از طریق پروکسی باز نمی‌شوند. هر دامنه در یک خط.',
-          blocked_domains_enable:'فعال‌سازی مسدودسازی',
-          blocked_domains_label:'لیست دامنه‌های مسدود',
-          blocked_domains_hint:'مثال: example.com — زیردامنه‌ها هم مسدود می‌شوند',
-          blocked_domains_save:'ذخیره مسدودسازی',
-          blocked_domains_saved:'مسدودسازی دامنه ذخیره شد',
-          wc_protocol_title:'تنظیمات ادرس صفحات',
-          wc_protocol_desc:'تنظیمات انتقال، مسیر اتصال و آدرس صفحات',
-          wc_protocol_label:'پروتکل',
-          wc_transport_label:'حمل‌ونقل',
-          wc_grpc_mode_label:'حالت gRPC',
-          wc_fingerprint_label:'TLS Fingerprint',
-          wc_tls_fragment_label:'TLS Fragment',
-          wc_transport_path_label:'مسیر انتقال',
-          wc_transport_path_hint:'وقتی در بخش «پروکسی CDN» یک Proxy IP ست کنید، این مقدار خودکار روی fixip_<proxy-ip> تنظیم می‌شود.',
-          wc_var_username:'نام کاربری سرویس',
-          wc_var_used:'حجم مصرف‌شده تا این لحظه',
-          wc_var_total:'حجم کل سرویس (∞ یعنی نامحدود)',
-          wc_var_dayremind:'تعداد روزهای باقی‌مانده تا انقضا',
-          wc_var_expiry:'کل مدت اعتبار به روز (∞ یعنی نامحدود)',
-          wc_var_port:'پورتی که این کانفیگ خاص روی آن ساخته شده',
-          wc_var_proxyip:'آدرس Proxy IP فعلیِ تنظیم‌شده در بخش «پروکسی CDN»',
-          wc_var_flag:'پرچم کشوری که برای این پروکسی مشخص کردی (فرمت #کدکشور جلوی آی‌پی)',
-          adult_block_title:'مسدودسازی محتوای بزرگسال',
-          adult_block_label:'فیلتر کردن محتوای بزرگ سال (+18)',
-          adult_block_save:'ذخیره مسدودسازی بزرگسال',
-          adult_block_saved:'مسدودسازی محتوای بزرگسال ذخیره شد',
-          adult_block_save_fail:'خطا در ذخیره تنظیمات',
-          adult_block_saving:'در حال ذخیره...',
-          pwd_err_current_required:'رمز عبور فعلی را وارد کنید',
-          pwd_err_minlength:'رمز عبور جدید باید حداقل ۴ کاراکتر باشد',
-          pwd_err_mismatch:'رمز عبور جدید و تکرار آن یکسان نیستند',
-          pwd_err_generic:'خطا در تغییر رمز عبور',
-          dash_qr_zoom_title:'بزرگ‌نمایی QR',
-          wc_skip_cert_label:'رد کردن اعتبارسنجی TLS',
-          wc_random_path_label:'مسیر تصادفی',
-          wc_path_empty_hint:'خالی = پیش‌فرض',
-          wc_sub_page_path_label:'آدرس صفحه ساب',
-          wc_sub_page_path_hint:'مثال : /sub/(اسم سرویس)',
-          wc_logs_page_path_label:'آدرس صفحه لاگ‌ها',
-          wc_logs_page_path_hint:'مثال : /logs/(نام سرویس)',
-          resist_title:'سیاست مقاومت',
-          resist_desc:'قوانین مسیریابی Clash/Sing-box — پروفایل ایران/سانسور بال',
-          resist_profile_label:'پروفایل',
-          resist_profile_custom:'سفارشی',
-          resist_profile_iran_high:'ایران / سانسور بال',
-          resist_domestic_bypass:'ترافیک ایران مستقیم',
-          resist_block_quic:'مسدودسازی QUIC',
-          resist_ad_block:'مسدودسازی تبلیغات',
-          resist_malware_block:'مسدودسازی بدافزار',
-          resist_phishing_block:'مسدودسازی فیشینگ',
-          resist_bypass_sanctions:'دور زدن تحریم‌ها',
-          resist_doh:'DNS رمزنگاری‌شده (DoH)',
-          resist_anti_sanction_dns:'DNS ضدتحریم',
-          resist_save_btn:'ذخیره سیاست مقاومت',
-          wc_security_title:'امنیت',
-          wc_security_desc:'ECH و اتصال به پنل مرکزی',
-          wc_ech_enable_label:'فعال‌سازی ECH',
-          wc_ech_sni_label:'ECH SNI',
-          wc_ech_dns_label:'ECH DoH',
-          wc_central_api_label:'Central API (اختیاری)',
-          wc_sub_title:'اشتراک',
-          wc_sub_desc:'نام اشتراک، آدرس تبدیل‌گر و صفحه وضعیت کاربر',
-          wc_sub_name_label:'نام اشتراک',
-          wc_sub_update_label:'بازه به‌روزرسانی (ساعت)',
-          wc_admin_page_path_label:'آدرس پنل مدیریت',
-          wc_status_path_label:'آدرس صفحه وضعیت',
-          wc_status_path_hint:'مثلاً servicestat یا status — لینک نهایی: /آدرس/نام‌کاربر',
-          wc_sub_converter_label:'API تبدیل اشتراک',
-          wc_sub_config_label:'آدرس قوانین مسیریابی (.ini)',
-          wc_sub_emoji_label:'پرچم ایموجی در نام نودها',
-          wc_naming_title:'نام‌گذاری کانفیگ‌ها',
-          wc_naming_desc:'در این بخش میتوانید نام کانفیگ ها را با متغیر های ارائه شده نامگذاری کنید.',
-          wc_first_remark_label:'کانفیگ اول (غیرقابل تغییر)',
-          wc_info_remark_label:'کانفیگ مشخصات سرویس',
-          wc_vars_hint:'متغیرها: {username} {dayremind} {used} {total} {expiry} {port} — مثال dayremind روزهای باقیمانده را نشان می‌دهد',
-          wc_node_remark_label:'نام کانفیگ‌های اتصال',
-          wc_save_btn:'ذخیره تنظیمات ',
-          coming_soon_title:'در حال توسعه',
-          coming_soon_desc:'به زودی...',
-          guide_android_title:'راهنمای اتصال — اندروید',
-          guide_android_1:'اپ V2rayNG را از لینک زیر دانلود کنید:<br><a href="https://github.com/2dust/v2rayNG/releases/latest" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://github.com/2dust/v2rayNG/releases/latest</a>',
-          guide_android_2:'اپ را باز کنید',
-          guide_android_3:'روی آیکون + در بالا راست بزنید',
-          guide_android_4:'گزینه <strong>Import config from clipboard</strong> را انتخاب کنید<br><span class="text-xs opacity-70">(لینک کانفیگ باید از قبل کپی شده باشد)</span>',
-          guide_android_5:'کانفیگ در لیست ظاهر می‌شود — روی آن بزنید تا انتخاب شود',
-          guide_android_6:'دکمه اتصال پایین صفحه را بزنید، اکنون با موفقیت متصل شدید.',
-          guide_ios_title:'راهنمای اتصال — آیفون (iOS)',
-          guide_ios_1:'اپ Streisand را از App Store دانلود کنید:<br><a href="https://apps.apple.com/app/streisand/id6450534064" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://apps.apple.com/app/streisand/id6450534064</a>',
-          guide_ios_2:'اپ را باز کنید',
-          guide_ios_3:'روی + در بالا راست بزنید',
-          guide_ios_4:'گزینه <strong>Import from Clipboard</strong> را بزنید<br><span class="text-xs opacity-70">(لینک کانفیگ باید از قبل کپی شده باشد)</span>',
-          guide_ios_5:'کانفیگ اضافه شد — کنارش Connect را بزنید',
-          guide_ios_6:'در پنجره‌ای که باز می‌شود Allow را بزنید',
-          guide_desktop_title:'راهنمای اتصال — ویندوز / مک',
-          guide_windows:'ویندوز',
-          guide_mac:'مک',
-          guide_win_1:'نرم‌افزار v2rayN را دانلود کنید:<br><a href="https://github.com/2dust/v2rayN/releases/latest" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://github.com/2dust/v2rayN/releases/latest</a>',
-          guide_win_2:'فایل zip را extract کنید و v2rayN.exe را اجرا کنید',
-          guide_win_3:'در تسک‌بار روی آیکون برنامه راست‌کلیک کنید',
-          guide_win_4:'گزینه + را بزنید و نام دلخواه و لینک کپی شده را وارد کنید',
-          guide_win_5:'از منوی بالا روی گروه اشتراک زده و گزینه سوم را بزنید',
-          guide_win_6:'برای متصل شدن در پایین صفحه گزینه پاک کردن سیستم پروکسی را روی گزینه دوم بگذارید',
-          guide_mac_1:'اپ FoXray را از Mac App Store دانلود کنید',
-          guide_mac_2:'روی + بزنید و Import from clipboard را انتخاب کنید',
-          guide_mac_3:'کانفیگ را انتخاب و Connect بزنید',
-          guide_support:'نتوانستید متصل شوید؟ <a href="https://t.me/nexateam_bot" target="_blank" rel="noopener noreferrer" class="adm-guide-support">از قسمت پشتیبانی در بات کمک بگیرید</a>'},
-          en: {
-          nav_main:'Main Menu',
-          nav_dashboard:'Dashboard',
-          nav_users:'User Management',
-          nav_guide:'Connection Guide',
-          nav_node_server:'Node Server',
-          nav_ip_scanner:'Clean IP Scanner',
-          nav_cdn_proxy:'CDN Proxy',
-          nav_logs:'Activity Log',
-          nav_wireguard:'WireGuard Service',
-          nav_warp:'WARP Service',
-          nav_settings:'Panel Settings',
-          nav_panel_control:'Panel Control',
-          nav_update_panel:'Update Panel',
-          nav_about:'About Us',
-          nav_backup:'Panel Backup',
-          nav_tg_channel:'Nexa Telegram Channel',
-          nav_tg_bot:'Nexa Support Bot',
-          nav_collapse:'Collapse',
-          nav_expand:'Expand',
-          nav_logout:'Logout',
-          panel_version:'Version ${PANEL_VERSION}',
-          panel_subtitle:'Admin Panel',
-          aria_menu:'Menu',
-          aria_collapse:'Collapse',
-          aria_close:'Close',
-          theme_toggle:'Toggle theme',
-          dash_sub_title:'Main Subscription Link',
-          dash_manage_btn:'Click to manage this service',
-          dash_copy_sub:'Copy subscription',
-          node_server_title:'Main Node',
-          node_server_desc:'Your node on all Cloudflare TLS ports — use the Worker domain directly, separate from subscription. Copy each port.',
-          node_server_empty:'No node configs available',
-          node_server_copy:'Copy',
-          node_server_qr:'QR',
-          dash_worker_usage:'Worker Request Usage',
-          dash_reset_label:'Reset at:',
-          dash_reset_meta:'Requests reset daily at 3:30 AM Tehran time',
-          dash_top_req_title:'Top total request usage',
-          dash_top_req_empty:'No usage recorded yet',
-          dash_ip_title:'Your IP Details',
-          dash_via_server:'Via this server',
-          dash_direct_ip:'Direct IP (no proxy)',
-          dash_city:'City',
-          dash_region:'Region',
-          dash_country:'Country',
-          dash_fetching_loc:'Fetching location...',
-          dash_click_refresh:'Click refresh to fetch',
-          dash_loading_map:'Loading map...',
-          dash_zoom_map:'Zoom',
-          dash_map_via_server:'Map: via server',
-          dash_map_direct:'Map: direct IP',
-          dash_updating:'Updating...',
-          ip_scanner_desc:'Find the fastest Cloudflare clean IPs for your network',
-          ip_scan_total:'Tests to run',
-          ip_scan_keep:'Keep best',
-          ip_scan_ports_label:'Scan ports',
-          ip_scan_ports_required:'Select at least one port',
-          ip_scan_start:'Start scan',
-          ip_scan_results:'Clean IP results',
-          cdn_cf_banner_text:'Connect your Cloudflare token once (under a minute) for auto-updates and Worker usage stats.',
-          cdn_cf_connect:'Connect token',
-          cdn_access_title:'Cloudflare CDN access',
-          cdn_access_desc:'You can get the proxy IP of your choice from the Find Proxy section.',
-          cdn_mode_label:'Mode',
-          cdn_proxyip_label:'PROXYIP address',
-          cdn_proxyip_hint:'One line = one location. To show a country flag in the config name, add <code>#COUNTRYCODE</code> at the end of the line (e.g. <code>1.2.3.4#DE</code> or <code>5.6.7.8:2053#US</code>)',
-          cdn_chain_label:'Proxy address(es)',
-          cdn_chain_hint:'One proxy per line. One = fixed IP; two-three = auto rotation and failover.',
-          cdn_rotate_label:'Auto-rotate',
-          cdn_rotate_off:'Off, use all',
-          cdn_rotate_daily:'Daily',
-          cdn_rotate_weekly:'Weekly',
-          cdn_rotate_count:'Active count',
-          cdn_rotate_hint:'With several proxies, a different subset is served each day/week.',
-          cdn_verify:'Verify',
-          cdn_save:'Save',
-          cdn_finder_title:'Find proxies',
-          cdn_finder_load:'Load list',
-          cdn_finder_desc:'You can use proxies from 68 countries by loading lists.',
-          cdn_country_label:'Country',
-          cdn_pick_label:'Proxy',
-          cdn_use_selected:'Use selected',
-          cdn_proxy_saved:'CDN proxy settings saved',
-          cdn_proxy_fetching:'Fetching list...',
-          cdn_proxy_list_ok:'List loaded',
-          cdn_proxy_list_stats:'{proxies} proxies — {countries} countries',
-          cdn_proxy_use_ok:'Filled — now save',
-          cdn_proxy_verify_proxyip:'PROXYIP needs no separate test — checked on connect. Just Save.',
-          cdn_proxy_verify_ok:'Proxy reachable',
-          cdn_proxy_verify_fail:'No response',
-          cdn_proxy_enter_first:'Enter a proxy first',
-          ip_scan_copy:'Copy results',
-          ip_scan_save_pool:'Save to panel pool',
-          ip_scan_foot:'Scan runs entirely in your browser',
-          ip_scan_prep:'Preparing…',
-          ip_scan_testing:'Testing…',
-          ip_scan_alive:' alive',
-          ip_scan_none:'No responsive IP found',
-          ip_scan_found:' clean IPs found',
-          ip_scan_saved_pool:'Saved to panel pool',
-          ip_scan_pool_empty:'Panel scanner pool is empty',
-          ip_scan_pool_applied:'Scanner pool IPs applied',
-          ip_scan_copied:'Results copied',
-          ip_scan_pool_count:'Panel pool: {count} IPs',
-          ip_scan_pool_title:'Panel pool',
-          ip_scan_pool_desc:'Manage IPs stored in the panel repository',
-          ip_scan_source_title:'Clean IP source',
-          ip_scan_source_smart:'Smart',
-          ip_scan_source_pool:'Clean IP pool',
-          ip_scan_smart_desc:'In Smart mode, clean IPs are fetched from this URL:',
-          ip_scan_auto_saved:'Scan results saved to pool',
-          ip_scan_pool_textarea_ph:'One IP per line — e.g. 1.2.3.4 or 1.2.3.4:443',
-          ip_scan_pool_save:'Save pool',
-          ip_scan_pool_clear:'Clear all',
-          ip_scan_pool_saved:'Pool saved',
-          ip_scan_pool_cleared:'Pool cleared',
-          ip_scan_pool_remove:'Remove',
-          ip_scan_pool_max:'Maximum 50 IPs allowed in pool',
-          ip_scan_pool_clear_confirm:'Clear all pool IPs?',
-          ip_scan_server_title:'Server clean IPs',
-          ip_scan_server_desc:'IPs fetched from /clean-ip',
-          ip_scan_server_operator:'Operator',
-          ip_scan_server_all:'All',
-          ip_scan_server_refresh:'Refresh',
-          ip_scan_server_copy:'Copy',
-          ip_scan_server_loading:'Loading…',
-          ip_scan_server_empty:'List is empty',
-          dash_load_error:'Failed to load dashboard',
-          dash_loc_not_found:'Exact location not found',
-          dash_ip_not_found:'IP not found',
-          dash_map_unavailable:'Map unavailable',
-          dash_map_no_coords:'Approximate map location unavailable',
-          dash_direct_fetch_fail:'Failed to fetch direct IP',
-          dash_direct_ip_not_found:'Direct IP not found',
-          dash_direct_error:'Error fetching direct IP',
-          dash_direct_not_received:'Direct IP not received',
-          dash_main_user_not_found:'Main user not found',
-          stat_total:'Total Users',
-          stat_online:'Online',
-          stat_inactive:'Inactive',
-          stat_expired:'Expired',
-          users_loading:'Loading users...',
-          search_placeholder:'Search by service name...',
-          filter_all:'All',
-          filter_active:'Active',
-          filter_inactive:'Inactive',
-          filter_online:'Online',
-          filter_offline:'Offline',
-          filter_expired:'Expired / Finished',
-          sort_newest:'Newest',
-          sort_name:'Username (A–Z)',
-          sort_usage_desc:'Highest usage',
-          sort_usage_asc:'Lowest usage',
-          sort_expiry_asc:'Least time remaining',
-          bulk_selected:'{n} services selected',
-          bulk_deselect:'Clear selection',
-          bulk_edit:'Bulk edit',
-          bulk_activate:'Activate',
-          bulk_deactivate:'Disable',
-          bulk_reset_vol:'Reset volume',
-          bulk_reset_time:'Reset time',
-          bulk_reset_req:'Reset total requests',
-          bulk_save:'Save',
-          bulk_delete:'Delete',
-          users_list_title:'User List',
-          users_list_desc:'Manage services',
-          select_all:'Select all',
-          new_user:'New user',
-          add_user:'Add user',
-          th_user_ops:'User & actions',
-          th_sub_link:'Sub link',
-          th_protocol:'Protocol',
-          th_port:'Port',
-          th_volume:'Volume status',
-          th_expiry:'Expiry status',
-          th_requests:'Request usage',
-          th_created:'Created',
-          empty_no_users:'No users yet',
-          empty_create_hint:'Click "New user" to create your first user',
-          empty_no_results:'No results found',
-          empty_no_match:'No user matches your search',
-          badge_main_service:'Main service',
-          badge_online:'● Online',
-          badge_offline:'Offline',
-          badge_expired:'Expired',
-          badge_vol_done:'Volume used up',
-          badge_time_done:'Time expired',
-          badge_disabled:'Disabled',
-          badge_active:'Active',
-          badge_temp:'Temporary',
-          btn_sub_link:'Sub link',
-          btn_status:'Status',
-          btn_logs:'Logs',
-          btn_edit:'Edit',
-          btn_delete:'Delete',
-          btn_qr_sub:'Subscription QR',
-          btn_qr_sub_link:'Sub link QR',
-          usage_label:'Used:',
-          total_label:'Total:',
-          remaining_label:'Remaining:',
-          unlimited:'Unlimited',
-          days_unit:'days',
-          activate_user:'Activate user',
-          deactivate_user:'Disable user',
-          reset_vol_title:'Reset service volume',
-          reset_time_title:'Reset service time',
-          save_enabled:'Saved — auto-delete disabled',
-          save_disabled:'Save (prevent auto-delete after expiry)',
-          guide_tab_android:'Android',
-          guide_tab_ios:'iPhone',
-          guide_tab_desktop:'Windows / Mac',
-          usage_warn_title:'Daily request limit warning',
-          usage_warn_body:'Your Cloudflare requests today have exceeded 90,000. If you pass the free 100,000 request limit, panel access and connections will be blocked until 3:30 AM Tehran time.',
-          usage_warn_ok:'Got it',
-          modal_create_title:'Create new user',
-          modal_create_sub:'Enter VPN service settings',
-          modal_edit_title:'Edit user',
-          modal_edit_sub:'Edit settings for "{name}"',
-          modal_sys_title:'Manage main service',
-          modal_sys_sub:'Only port, clean IP and Proxy IP',
-          modal_sys_notice:'Main service is always <strong>unlimited</strong>. Only port, clean IP and Proxy IP can be changed.',
-          um_basic_info:'Basic info',
-          um_username:'Service name',
-          um_volume:'Volume (GB)',
-          um_expiry:'Expiry (days)',
-          um_max_conn:'Total requests',
-          um_max_req_daily:'Daily requests',
-          um_ports:'Connection ports',
-          um_ports_tls:'Secure ports (TLS)',
-          um_ports_nontls:'Regular ports (Non-TLS)',
-          um_advanced:'Advanced settings',
-          um_clean_ip:'Cloudflare clean IP (optional)',
-          um_ip_pool:'Clean IP pool',
-          um_scanner_pool:'Use panel scanner pool',
-          um_fingerprint:'Browser fingerprint simulator',
-          um_proxy_ip:'Custom Proxy IP (optional)',
-          um_proxy_hint:'If empty, the panel default CDN pool will be used on connect.',
-          um_proxy_placeholder:'Empty = use panel proxy',
-          um_name_placeholder:'e.g. ali',
-          fp_random:'Random — default',
-          fp_randomized:'Randomized (dynamic)',
-          cancel:'Cancel',
-          create_user:'Create user',
-          save_changes:'Save changes',
-          save_settings:'Save settings',
-          creating:'Creating...',
-          saving:'Saving changes...',
-          applying:'Applying...',
-          bulk_edit_title:'Bulk edit',
-          bulk_apply:'Apply to selected',
-          bulk_clean_ip:'Clean IP',
-          bulk_ip_pool:'IP pool',
-          ip_pool_title:'Clean IP & domain pool',
-          ip_operator:'Operator',
-          ip_count:'Count',
-          ip_fetch:'Fetch',
-          qr_scan:'Scan QR code',
-          map_title:'Approximate location map',
-          close:'Close',
-          confirm_title:'Confirm action',
-          confirm_ok:'Confirm',
-          confirm_cancel:'Cancel',
-          confirm_yes:'Yes, proceed',
-          confirm_yes_delete:'Yes, delete',
-          confirm_yes_reset:'Yes, reset',
-          confirm_yes_restore:'Yes, restore',
-          confirm_yes_logout:'Yes, logout',
-          toast_select_service:'Select at least one service first',
-          toast_no_selected:'No services selected',
-          toast_select_field:'Select at least one field to apply',
-          toast_select_port:'Select at least one port',
-          toast_bulk_done:'Bulk action completed on {n} services',
-          toast_bulk_edit_done:'Bulk edit applied to {n} services',
-          toast_bulk_fail:'Bulk action failed',
-          toast_bulk_edit_fail:'Bulk edit failed',
-          toast_op_fail:'Operation failed',
-          toast_sys_always_saved:'Main service is always saved',
-          toast_sys_status_locked:'Main service status cannot be changed',
-          toast_sys_reset_locked:'Cannot reset main service volume or time',
-          toast_sys_no_delete:'System user cannot be deleted',
-          toast_sub_copied:'Subscription link copied',
-          toast_sub_copy_fail:'Failed to copy subscription link',
-          toast_node_copied:'Node config copied',
-          toast_node_copy_fail:'Failed to copy node config',
-          toast_user_deleted:'User deleted successfully',
-          toast_user_not_found:'User not found!',
-          toast_conn_error:'Connection error',
-          toast_tg_saved:'Telegram settings saved',
-          toast_save_fail:'Save failed',
-          toast_logs_cleared:'Logs cleared',
-          toast_logs_load_fail:'Failed to load logs',
-          toast_backup_restored:'Backup restored ({n} users)',
-          toast_backup_fail:'Restore failed',
-          toast_backup_download_fail:'Failed to download backup',
-          toast_reset_vol_ok:'{type} reset successfully',
-          toast_reset_vol:'Volume',
-          toast_reset_time:'Time',
-          bulk_confirm_title:'Bulk action',
-          bulk_confirm_msg:'Are you sure you want to "{action}"?',
-          bulk_delete_n:'Delete {n} services',
-          bulk_activate_n:'Activate {n} services',
-          bulk_deactivate_n:'Disable {n} services',
-          bulk_reset_vol_n:'Reset volume for {n} services',
-          bulk_reset_time_n:'Reset time for {n} services',
-          bulk_reset_req_n:'Reset total requests for {n} services',
-          bulk_enable_save_n:'Enable save for {n} services',
-          reset_confirm_title:'Reset service',
-          reset_confirm_msg:'Reset {type} for user "{name}"?',
-          delete_user_title:'Delete user',
-          delete_user_msg:'Delete user "{name}"?',
-          restore_confirm_title:'Restore backup',
-          restore_confirm_msg:'Restoring will replace all current users and settings. Continue?',
-          clear_logs_confirm:'Delete all panel activity logs?',
-          clear_logs_title:'Delete logs',
-          logout_confirm:'Do you want to logout?',
-          logout_title:'Logout',
-          alert_select_port:'⚠️ Please select at least one connection port!',
-          alert_error:'Error: {msg}',
-          users_load_error:'Failed to fetch data from server',
-          users_parse_error:'Failed to process user data',
-          update_title:'Panel update',
-          update_msg:'Downloading and installing new version...',
-          update_available_title:'Update available',
-          update_available_msg:'Version {remote} is available.\\nYour current panel version: {current}',
-          update_later:'Later',
-          update_complete:'Panel updated successfully',
-          update_complete_reload:'Reloading panel...',
-          update_failed:'Update failed',
-          update_failed_msg:'Could not update panel.',
-          update_cf_token_redirect:'CF_TOKEN is invalid. Redirecting to setup page...',
-          panel_update_title:'Update Panel',
-          panel_update_desc:'A new version of the server will be downloaded and your panel will be updated and new features will be added.',
-          panel_update_current:'Current version',
-          panel_update_remote:'Server version',
-          panel_update_btn:'Update Panel',
-          panel_update_confirm:'The latest version will be downloaded from the management server and deployed to your worker. Continue?',
-          panel_update_available:'Version {remote} is available — your current version is {current}',
-          panel_update_latest:'Your panel is up to date.',
-          increase:'Increase',
-          decrease:'Decrease',
-          cf_token_required:'Enter Cloudflare API Token',
-          reset_panel_fail:'Failed to reset panel',
-          reset_panel_yes:'Yes, reset',
-          about_kicker:'Open infrastructure dev team',
-          about_hero_title:'Bypass filtering with your own panel',
-          about_hero_desc:'NEXA is a group of developers building open-source tools for free internet access — on Cloudflare Workers infrastructure, no middleman, no config sales, fully under your control.',
-          about_kicker2:'About Nexa',
-          about_title:'Your own panel, no middleman, no cost',
-          about_desc:'Instead of selling a service, NEXA provides a public tool. Anyone can deploy their personal connection management panel on their own Cloudflare account in minutes — fast, stable, and without trusting a middleman server.',
-          about_f1_title:'Open source & transparent',
-          about_f1_desc:'The panel code is fully visible; you can review everything that runs in the panel before using it.',
-          about_f2_title:'Your own infrastructure',
-          about_f2_desc:'The panel runs on your personal Cloudflare account; data and connections do not pass through any middleman server.',
-          about_f3_title:'Quick setup',
-          about_f3_desc:'In less than five minutes, without deep programming knowledge, your personal panel is ready and accessible.',
-          about_f4_title:'Not for sale',
-          about_f4_desc:"NEXA's goal is education and providing tools, not selling configs or internet subscriptions.",
-          about_social:'Follow us on social media',
-          about_social_desc:'Follow NEXA tutorials, updates and news on YouTube and Telegram.',
-          tg_notify_title:'Telegram Notifications',
-          tg_enable:'Enable Telegram notifications',
-          tg_token:'Bot Token',
-          tg_chat_id:'Chat / User ID',
-          tg_chat_hint:'To get your chat ID, visit our bot and receive your numeric ID. Bot address: <a href="https://t.me/nexateam_bot" target="_blank" rel="noopener noreferrer">https://t.me/nexateam_bot</a>',
-          tg_status_on:'On',
-          tg_status_off:'Off',
-          save:'Save',
-          save_success:'Settings saved successfully',
-          logs_desc:'All important panel events',
-          refresh:'Refresh',
-          clear_logs:'Clear all',
-          loading:'Loading...',
-          logs_empty:'No events yet.',
-          col_time:'Time',
-          col_action:'Action',
-          col_details:'Details',
-          backup_desc:'Download or restore users, all panel settings, activity logs and connection logs.',
-          backup_download:'Download backup',
-          backup_upload:'Upload backup',
-          backup_includes:'Includes: users (all fields), worker, CDN, network, Telegram, blocked domains, CF API, activity logs and connection logs',
-          backup_auto_title:'Daily Auto Backup',
-          backup_auto_desc:'Every day at 00:00 (Tehran time) a full backup is sent to Telegram — requires bot token and chat ID in Activity Log section.',
-          backup_tg_hint:'To send backups, first configure bot token and chat ID in the Activity Log section.',
-          backup_cron_hint:'For exact 00:00 runs, add a Cloudflare Workers Cron Trigger: 30 20 * * *',
-          backup_tg_send:'Send backup to Telegram (test)',
-          backup_last_run:'Last auto backup',
-          backup_last_never:'Not run yet',
-          backup_tg_sent:'Backup sent to Telegram successfully',
-          backup_tg_fail:'Failed to send backup to Telegram',
-          backup_auto_saved:'Auto backup settings saved',
-          reset_panel_title:'Reset All Settings',
-          reset_panel_desc:'All users, proxy settings, Telegram notifications and logs will be removed. The panel will be like the first visit. Admin password is kept.',
-          reset_panel_btn:'Reset All Settings',
-          reset_panel_confirm:'Reset will delete all users (except main service), settings and logs. This cannot be undone. Continue?',
-          reset_panel_success:'Panel reset successfully',
-          pwd_info_title:'Change Admin Password',
-          pwd_storage_note:'Password is stored in the ADMIN variable (Text type) in Cloudflare Workers.',
-          pwd_current_label:'Current password',
-          pwd_new_label:'New password',
-          pwd_confirm_label:'Confirm new password',
-          pwd_change_btn:'Change password',
-          pwd_change_success:'Password changed successfully',
-          cf_creds_title:'Cloudflare API Settings',
-          cf_creds_note:'Enter only CF_TOKEN — Account ID is auto-detected from the token and saved to Worker secrets.',
-          cf_token_label:'CF_TOKEN',
-          cf_ac_id_label:'Account ID',
-          cf_ac_id_auto_hint:'No manual entry needed',
-          cf_creds_save:'Save Token',
-          cf_creds_success:'Token saved successfully',
-          cf_token_hint_set:'Token is configured — enter a new token to change it',
-          panel_control_restart_title:'Restart Panel',
-          panel_control_restart_desc:'The uptime counter and internal Worker temporary caches will be cleared. Your users and settings remain untouched.',
-          panel_control_restart_btn:'Restart Panel',
-          panel_control_disable_label:'Disable Admin Panel',
-          panel_control_disable_desc:'When enabled, the login page and admin panel become inaccessible to everyone and the Nexa status page is shown instead. Active VPN services remain running. To restore access, open the URL with <code dir="ltr">?unlock=1</code> (e.g. <code dir="ltr">/admin?unlock=1</code>).',
-          kill_all_services_label:'Disconnect all services',
-          kill_all_services_label:'Disconnect all services',
-          kill_all_services_desc:'When enabled, all services will be suspended and disconnected',
-          kill_all_services_on:'All services disconnected',
-          kill_all_services_off:'Services re-enabled',
-          proxy_save_base:'Proxy IP settings saved',
-          proxy_change_labels:{proxy_ips:'Proxy IP addresses (CDN)'},
-          proxy_ips_label:'Proxy IP addresses (CDN)',
-          proxy_ips_hint:'Empty = default CDN pool',
-          blocked_domains_title:'Domain blocking',
-          blocked_domains_desc:'Listed domains cannot be accessed through the proxy. One domain per line.',
-          blocked_domains_enable:'Enable domain blocking',
-          blocked_domains_label:'Blocked domain list',
-          blocked_domains_hint:'Example: example.com — subdomains are blocked too',
-          blocked_domains_save:'Save blocking rules',
-          blocked_domains_saved:'Domain blocking saved',
-          wc_protocol_title:'Protocol & transport',
-          wc_protocol_desc:'Protocol, transport, connection path and page URLs',
-          wc_protocol_label:'Protocol',
-          wc_transport_label:'Transport',
-          wc_grpc_mode_label:'gRPC mode',
-          wc_fingerprint_label:'TLS fingerprint',
-          wc_tls_fragment_label:'TLS fragment',
-          wc_transport_path_label:'Transport path',
-          wc_transport_path_hint:'When a Proxy IP is set in the "CDN Proxy" section, this value is automatically set to fixip_<proxy-ip>.',
-          wc_var_username:'Service username',
-          wc_var_used:'Used volume so far',
-          wc_var_total:'Total service volume (∞ = unlimited)',
-          wc_var_dayremind:'Number of days remaining until expiry',
-          wc_var_expiry:'Total validity in days (∞ = unlimited)',
-          wc_var_port:'The port this specific config is built on',
-          wc_var_proxyip:'Current Proxy IP address configured in "CDN Proxy" section',
-          wc_var_flag:'Country flag set for this proxy (format #COUNTRYCODE after the IP)',
-          adult_block_title:'Adult content blocking',
-          adult_block_label:'Filter adult content (+18)',
-          adult_block_save:'Save adult blocking',
-          adult_block_saved:'Adult content blocking saved',
-          adult_block_save_fail:'Failed to save settings',
-          adult_block_saving:'Saving...',
-          pwd_err_current_required:'Please enter your current password',
-          pwd_err_minlength:'New password must be at least 4 characters',
-          pwd_err_mismatch:'New password and confirmation do not match',
-          pwd_err_generic:'Failed to change password',
-          dash_qr_zoom_title:'Zoom QR',
-          wc_skip_cert_label:'Skip TLS verification',
-          wc_random_path_label:'Random path',
-          wc_path_empty_hint:'Empty = default',
-          wc_sub_page_path_label:'Subscription page path',
-          wc_sub_page_path_hint:'e.g. sub — URL: /path/username',
-          wc_logs_page_path_label:'Logs page path',
-          wc_logs_page_path_hint:'e.g. logs — URL: /path/username',
-          resist_title:'Resistance policy',
-          resist_desc:'Clash/Sing-box routing rules — Iran/high censorship profile',
-          resist_profile_label:'Profile',
-          resist_profile_custom:'Custom',
-          resist_profile_iran_high:'Iran / High censorship',
-          resist_domestic_bypass:'Iran direct traffic',
-          resist_block_quic:'Block QUIC',
-          resist_ad_block:'Block ads',
-          resist_malware_block:'Block malware',
-          resist_phishing_block:'Block phishing',
-          resist_bypass_sanctions:'Bypass sanctions',
-          resist_doh:'Encrypted DNS (DoH)',
-          resist_anti_sanction_dns:'Anti-sanction DNS',
-          resist_save_btn:'Save resistance policy',
-          wc_security_title:'Security',
-          wc_security_desc:'ECH and central panel connection',
-          wc_ech_enable_label:'Enable ECH',
-          wc_ech_sni_label:'ECH SNI',
-          wc_ech_dns_label:'ECH DoH',
-          wc_central_api_label:'Central API (optional)',
-          wc_sub_title:'Subscription',
-          wc_sub_desc:'Subscription name, converter API and user status page',
-          wc_sub_name_label:'Subscription name',
-          wc_sub_update_label:'Update interval (hours)',
-          wc_admin_page_path_label:'Admin panel path',
-          wc_status_path_label:'Status page path',
-          wc_status_path_hint:'e.g. servicestat or status — final URL: /path/username',
-          wc_sub_converter_label:'Subscription converter API',
-          wc_sub_config_label:'Routing rules URL (.ini)',
-          wc_sub_emoji_label:'Emoji flags in node names',
-          wc_naming_title:'Config naming',
-          wc_naming_desc:'Subscription config name templates — first config (not for sale) is locked',
-          wc_first_remark_label:'First config (locked)',
-          wc_info_remark_label:'Service info config',
-          wc_vars_hint:'Variables: {username} {dayremind} {used} {total} {expiry} {port} — dayremind shows remaining days',
-          wc_node_remark_label:'Connection config names',
-          wc_save_btn:'Save worker settings',
-          coming_soon_title:'Under development',
-          coming_soon_desc:'Coming soon...',
-          guide_android_title:'Connection guide — Android',
-          guide_android_1:'Download V2rayNG from the link below:<br><a href="https://github.com/2dust/v2rayNG/releases/latest" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://github.com/2dust/v2rayNG/releases/latest</a>',
-          guide_android_2:'Open the app',
-          guide_android_3:'Tap the + icon at top right',
-          guide_android_4:'Select <strong>Import config from clipboard</strong><br><span class="text-xs opacity-70">(config link must be copied first)</span>',
-          guide_android_5:'Config appears in the list — tap to select it',
-          guide_android_6:'Tap the connect button at the bottom — you are now connected.',
-          guide_ios_title:'Connection guide — iPhone (iOS)',
-          guide_ios_1:'Download Streisand from the App Store:<br><a href="https://apps.apple.com/app/streisand/id6450534064" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://apps.apple.com/app/streisand/id6450534064</a>',
-          guide_ios_2:'Open the app',
-          guide_ios_3:'Tap + at top right',
-          guide_ios_4:'Tap <strong>Import from Clipboard</strong><br><span class="text-xs opacity-70">(config link must be copied first)</span>',
-          guide_ios_5:'Config added — tap Connect next to it',
-          guide_ios_6:'Tap Allow in the popup',
-          guide_desktop_title:'Connection guide — Windows / Mac',
-          guide_windows:'Windows',
-          guide_mac:'Mac',
-          guide_win_1:'Download v2rayN:<br><a href="https://github.com/2dust/v2rayN/releases/latest" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://github.com/2dust/v2rayN/releases/latest</a>',
-          guide_win_2:'Extract the zip and run v2rayN.exe',
-          guide_win_3:'Right-click the app icon in the taskbar',
-          guide_win_4:'Tap + and enter a name and the copied link',
-          guide_win_5:'From the top menu, open subscription group and select the third option',
-          guide_win_6:'To connect, set "Clear system proxy" at the bottom to the second option',
-          guide_mac_1:'Download FoXray from the Mac App Store',
-          guide_mac_2:'Tap + and select Import from clipboard',
-          guide_mac_3:'Select the config and tap Connect',
-          guide_support:'Cannot connect? <a href="https://t.me/nexateam_bot" target="_blank" rel="noopener noreferrer" class="adm-guide-support">Get help from support bot</a>'
-          }
-          };
+        const ADMIN_I18N = { fa: { nav_main:'منوی اصلی', nav_dashboard:'داشبورد', nav_users:'مدیریت کاربران', nav_guide:'آموزش اتصال', nav_node_server:'سرور نود', nav_ip_scanner:'اسکنر IP تمیز', nav_cdn_proxy:'پروکسی CDN', nav_logs:'لاگ فعالیت', nav_wireguard:'سرویس WireGuard', nav_warp:'سرویس WARP', nav_settings:'تنظیمات پنل', nav_panel_control:'کنترل پنل', nav_update_panel:'به‌روزرسانی پنل', nav_about:'درباره ما', nav_backup:'بکاپ پنل', nav_tg_channel:'کانال تلگرام Nexa', nav_tg_bot:'بات پشتیبانی Nexa', nav_collapse:'جمع کردن منو', nav_expand:'باز کردن', nav_logout:'خروج', panel_version:'نسخه ${PANEL_VERSION}', panel_subtitle:'پنل مدیریت', aria_menu:'منو', aria_collapse:'جمع کردن منو', aria_close:'بستن', theme_toggle:'تغییر تم', dash_sub_title:'لینک اشتراک اصلی', dash_manage_btn:'برای مدیریت این سرویس کلیک کنید', dash_copy_sub:'کپی اشتراک', node_server_title:'نود اصلی', node_server_desc:'نود شما روی همه‌ی پورت‌های TLS کلودفلر، با استفاده‌ی مستقیم از دامنه‌ی ورکر، جدا از اشتراک، هر پورت را کپی کنید.', node_server_empty:'کانفیگ نودی در دسترس نیست', node_server_copy:'کپی', node_server_qr:'QR', dash_worker_usage:'مصرف ریکوئست Worker', dash_reset_label:'ریست ساعت:', dash_reset_meta:'ریست ریکوئست‌ها در ساعت 3:30 به وقت تهران', dash_top_req_title:'بیشترین مصرف ریکوئست کل', dash_top_req_empty:'هنوز مصرفی ثبت نشده', dash_ip_title:'مشخصات IP شما', dash_via_server:'از طریق این سرور', dash_direct_ip:'IP مستقیم (بدون پروکسی)', dash_city:'شهر', dash_region:'منطقه', dash_country:'کشور', dash_fetching_loc:'در حال دریافت موقعیت...', dash_click_refresh:'برای دریافت، بروزرسانی را بزنید', dash_loading_map:'در حال بارگذاری نقشه...', dash_zoom_map:'بزرگ‌نمایی', dash_map_via_server:'نقشه: از طریق سرور', dash_map_direct:'نقشه: IP مستقیم', dash_updating:'در حال بروزرسانی...', ip_scanner_desc:'سریع‌ترین آی‌پی‌های تمیز کلودفلر را برای شبکه‌تان پیدا کنید', ip_scan_total:'تعداد ایپی مورد نظر برای تست', ip_scan_keep:'انتخاب بهترین ایپی ', ip_scan_ports_label:'پورت‌های اسکن', ip_scan_ports_required:'حداقل یک پورت انتخاب کنید', ip_scan_start:'شروع اسکن', ip_scan_results:'نتایج آی‌پی تمیز', cdn_cf_banner_text:'برای بروزرسانی خودکار و نمایش «مصرف ورکر»، یک‌بار توکن Cloudflare را وصل کن، کمتر از یک دقیقه.', cdn_cf_connect:'اتصال توکن', cdn_access_title:'دسترسی CDN کلودفلر', cdn_access_desc:'از بخش یافتن پروکسی میتوانید پروکسی ایپی مد نظر خود را دریافت کنید.', cdn_mode_label:'حالت', cdn_proxyip_label:'آدرس PROXYIP', cdn_proxyip_hint:'هر خط = یک لوکیشن. اگه می‌خوای پرچم کشورش هم توی اسم کانفیگ بیاد، انتهای اون خط بنویس <code>#کدکشور</code> (مثال: <code>1.2.3.4#DE</code> یا <code>5.6.7.8:2053#US</code>)', cdn_chain_label:'آدرس پروکسی', cdn_chain_hint:'هر پروکسی در یک خط. یکی = IP ثابت؛ دو تا سه = چرخش و جایگزینی خودکار.', cdn_rotate_label:'چرخش خودکار', cdn_rotate_off:'خاموش — همه', cdn_rotate_daily:'روزانه', cdn_rotate_weekly:'هفتگی', cdn_rotate_count:'تعداد فعال', cdn_rotate_hint:'با چند پروکسی، هر روز/هفته زیرمجموعه‌ای متفاوت ارائه می‌شود.', cdn_verify:'بررسی', cdn_save:'ذخیره', cdn_finder_title:'یافتن پروکسی', cdn_finder_load:'دریافت فهرست', cdn_finder_desc:'شما میتوانید با لود فهرست ها از پروکسی 68 کشور استفاده کنید. ', cdn_country_label:'کشور', cdn_pick_label:'پروکسی', cdn_use_selected:'استفاده از انتخاب', cdn_proxy_saved:'تنظیمات پروکسی CDN ذخیره شد', cdn_proxy_fetching:'در حال دریافت فهرست...', cdn_proxy_list_ok:'فهرست دریافت شد', cdn_proxy_list_stats:'{proxies} پروکسی — {countries} کشور', cdn_proxy_use_ok:'پر شد — اکنون ذخیره کنید', cdn_proxy_verify_proxyip:'PROXYIP نیاز به تست جدا ندارد — هنگام اتصال خودکار بررسی می‌شود. فقط ذخیره کنید.', cdn_proxy_verify_ok:'پروکسی در دسترس است', cdn_proxy_verify_fail:'پاسخی دریافت نشد', cdn_proxy_enter_first:'ابتدا آدرس پروکسی را وارد کنید', ip_scan_copy:'کپی نتایج', ip_scan_save_pool:'ذخیره در مخزن پنل', ip_scan_foot:'اسکن کاملاً در مرورگر شما انجام می‌شود', ip_scan_prep:'در حال آماده‌سازی…', ip_scan_testing:'در حال تست…', ip_scan_alive:' سالم', ip_scan_none:'هیچ IP سالمی پیدا نشد', ip_scan_found:' IP تمیز پیدا شد', ip_scan_saved_pool:'در مخزن پنل ذخیره شد', ip_scan_pool_empty:'مخزن اسکنر پنل خالی است', ip_scan_pool_applied:'آی‌پی‌های مخزن اسکنر اعمال شد', ip_scan_copied:'نتایج کپی شد', ip_scan_pool_count:'مخزن پنل: {count} آی‌پی', ip_scan_pool_title:'مخزن پنل', ip_scan_pool_desc:'مدیریت آی‌پی‌های ذخیره‌شده در مخزن پنل', ip_scan_source_title:'منبع آی‌پی تمیز', ip_scan_source_smart:'هوشمند', ip_scan_source_pool:'مخزن ایپی تمیز', ip_scan_smart_desc:'در حالت هوشمند، آی‌پی‌های تمیز از لینک زیر دریافت می‌شوند:', ip_scan_auto_saved:'نتایج اسکن در مخزن ذخیره شد', ip_scan_pool_textarea_ph:'هر خط یک IP — مثال: 1.2.3.4 یا 1.2.3.4:443', ip_scan_pool_save:'ذخیره مخزن', ip_scan_pool_clear:'پاک کردن همه', ip_scan_pool_saved:'مخزن ذخیره شد', ip_scan_pool_cleared:'مخزن پاک شد', ip_scan_pool_remove:'حذف', ip_scan_pool_max:'حداکثر ۵۰ آی‌پی در مخزن مجاز است', ip_scan_pool_clear_confirm:'همه آی‌پی‌های مخزن پاک شوند؟', ip_scan_server_title:'ایپی تمیز سرور', ip_scan_server_desc:'لیست آی‌پی‌های دریافتی از /clean-ip', ip_scan_server_operator:'اپراتور', ip_scan_server_all:'همه', ip_scan_server_refresh:'بروزرسانی', ip_scan_server_copy:'کپی', ip_scan_server_loading:'در حال بارگذاری…', ip_scan_server_empty:'لیست خالی است', dash_load_error:'خطا در بارگذاری داشبورد', dash_loc_not_found:'موقعیت دقیق یافت نشد', dash_ip_not_found:'IP یافت نشد', dash_map_unavailable:'نقشه در دسترس نیست', dash_map_no_coords:'موقعیت تقریبی روی نقشه در دسترس نیست', dash_direct_fetch_fail:'دریافت IP مستقیم ناموفق بود', dash_direct_ip_not_found:'IP مستقیم یافت نشد', dash_direct_error:'خطا در دریافت IP مستقیم', dash_direct_not_received:'IP مستقیم دریافت نشد', dash_main_user_not_found:'کاربر اصلی یافت نشد', stat_total:'کل کاربران', stat_online:'آنلاین', stat_inactive:'غیرفعال', stat_expired:'منقضی', users_loading:'در حال بارگذاری کاربران...', search_placeholder:'جستجوی با نام سرویس ...', filter_all:'همه', filter_active:'فعال', filter_inactive:'غیرفعال', filter_online:'آنلاین', filter_offline:'آفلاین', filter_expired:'منقضی / تمام شده', sort_newest:'جدیدترین', sort_name:'نام کاربری (الفبا)', sort_usage_desc:'بیشترین مصرف', sort_usage_asc:'کمترین مصرف', sort_expiry_asc:'کمترین زمان باقی‌مانده', bulk_selected:'{n} سرویس انتخاب شده', bulk_deselect:'لغو انتخاب', bulk_edit:'ویرایش گروهی', bulk_activate:'فعال', bulk_deactivate:'قطع', bulk_reset_vol:'ریست حجم', bulk_reset_time:'ریست زمان', bulk_reset_req:'ریست ریکوئست کل', bulk_save:'ذخیره', bulk_delete:'حذف', users_list_title:'لیست کاربران', users_list_desc:'مدیریت سرویس ها', select_all:'انتخاب همه', new_user:'کاربر جدید', add_user:'افزودن کاربر', th_user_ops:'نام کاربر و عملیات', th_sub_link:'لینک ساب', th_protocol:'پروتکل', th_port:'پورت', th_volume:'وضعیت حجم', th_expiry:'وضعیت اعتبار', th_requests:'مصرف ریکوئست', th_created:'تاریخ ساخت', empty_no_users:'کاربری وجود ندارد', empty_create_hint:'برای ساخت اولین کاربر روی «کاربر جدید» کلیک کنید', empty_no_results:'نتیجه‌ای یافت نشد', empty_no_match:'کاربری با مشخصات جستجو شده پیدا نشد', badge_main_service:'سرویس اصلی', badge_online:'● آنلاین', badge_offline:'آفلاین', badge_expired:'منقضی', badge_vol_done:'حجم تمام', badge_time_done:'زمان تمام', badge_disabled:'قطع', badge_active:'فعال', badge_temp:'موقت', badge_req_done:'ریکوئست تمام', btn_sub_link:'لینک ساب', btn_status:'وضعیت', btn_logs:'لاگ', btn_edit:'ویرایش', btn_delete:'حذف', btn_qr_sub:'qrcode اشتراک', btn_qr_sub_link:'qrcode لینک ساب', usage_label:'مصرف:', req_total_label:'مصرف کل', req_daily_label:'مصرف روزانه', total_label:'کل:', remaining_label:'باقی‌مانده:', unlimited:'نامحدود', days_unit:'روز', activate_user:'فعال کردن کاربر', deactivate_user:'قطع کردن کاربر', reset_vol_title:'ریست حجم سرویس', reset_time_title:'ریست زمان سرویس', save_enabled:'ذخیره شده — حذف خودکار غیرفعال', save_disabled:'ذخیره (جلوگیری از حذف خودکار پس از انقضا)', guide_tab_android:'اندروید', guide_tab_ios:'آیفون', guide_tab_desktop:'ویندوز / مک', usage_warn_title:'هشدار محدودیت درخواست روزانه', usage_warn_body:'درخواست‌های امروز کلودفلر شما از مرز ۹۰,۰۰۰ عبور کرده است. در صورت عبور از محدودیت رایگان ۱۰۰,۰۰۰ درخواست، دسترسی به پنل و اتصالات تا ساعت ۳:۳۰ بامداد (به وقت ایران) قطع خواهد شد.', usage_warn_ok:'متوجه شدم', modal_create_title:'ایجاد کاربر جدید', modal_create_sub:'تنظیمات سرویس VPN را وارد کنید', modal_edit_title:'ویرایش کاربر', modal_edit_sub:'ویرایش تنظیمات «{name}»', modal_sys_title:'مدیریت سرویس اصلی', modal_sys_sub:'فقط پورت، آیپی تمیز و Proxy IP', modal_sys_notice:'سرویس اصلی همیشه <strong>نامحدود</strong> است. فقط پورت، آیپی تمیز و Proxy IP قابل تغییر است.', um_basic_info:'اطلاعات پایه', um_username:'نام سرویس', um_volume:'حجم (GB)', um_expiry:'اعتبار (روز)', um_max_conn:'ریکوئست کل', um_max_req_daily:'ریکوئست روزانه', um_ports:'پورت‌های اتصال', um_ports_tls:'پورت‌های امن (TLS)', um_ports_nontls:'پورت‌های معمولی (Non-TLS)', um_advanced:'تنظیمات پیشرفته', um_clean_ip:'آیپی تمیز ', um_ip_pool:'دریافت ایپی تمیز از سرور', um_scanner_pool:'استفاده از مخزن اسکنر پنل', um_fingerprint:'Fingerprint ', um_proxy_ip:'Proxy IP اختصاصی (اختیاری)', um_proxy_hint:'اگر خالی باشد، هنگام اتصال از پول CDN پیش‌فرض پنل استفاده می‌شود.', um_proxy_placeholder:'خالی = استفاده از پروکسی پنل', um_name_placeholder:'مثال: ali', um_clean_ip_placeholder:'میتوانید ایپی تمیز خود را از مخزن پنل یا از سرور ما', fp_random:'Random (اتفاقی) — پیش‌فرض', fp_randomized:'Randomized (پویا)', cancel:'انصراف', create_user:'ایجاد کاربر', save_changes:'ذخیره تغییرات', save_settings:'ذخیره تنظیمات', creating:'در حال ایجاد...', saving:'در حال ذخیره تغییرات...', applying:'در حال اعمال...', bulk_edit_title:'ویرایش گروهی', bulk_apply:'اعمال روی انتخاب‌شده‌ها', bulk_clean_ip:'آیپی تمیز', bulk_ip_pool:'مخزن آیپی', ip_pool_title:'دریافت ایپی تمیز و دامنه پشت کلادفلر', ip_operator:'اوپراتور', ip_count:'تعداد', ip_fetch:'دریافت', qr_scan:'اسکن کد QR', map_title:'نقشه موقعیت تقریبی', close:'بستن', confirm_title:'تأیید عملیات', confirm_ok:'تأیید', confirm_cancel:'انصراف', confirm_yes:'بله، انجام شود', confirm_yes_delete:'بله، حذف شود', confirm_yes_reset:'بله، ریست شود', confirm_yes_restore:'بله، بازیابی شود', confirm_yes_logout:'بله، خروج', toast_select_service:'ابتدا حداقل یک سرویس را انتخاب کنید', toast_no_selected:'هیچ سرویسی انتخاب نشده است', toast_select_field:'حداقل یک فیلد را برای اعمال انتخاب کنید', toast_select_port:'حداقل یک پورت انتخاب کنید', toast_bulk_done:'عملیات گروهی روی {n} سرویس انجام شد', toast_bulk_edit_done:'ویرایش گروهی روی {n} سرویس انجام شد', toast_bulk_fail:'خطا در عملیات گروهی', toast_bulk_edit_fail:'خطا در ویرایش گروهی', toast_op_fail:'عملیات ناموفق بود', toast_sys_always_saved:'سرویس اصلی همیشه ذخیره است', toast_sys_status_locked:'وضعیت سرویس اصلی قابل تغییر نیست', toast_sys_reset_locked:'ریست حجم یا زمان سرویس اصلی مجاز نیست', toast_sys_no_delete:'این کاربر سیستمی است و قابل حذف نیست', toast_sub_copied:'لینک ساب با موفقیت کپی شد', toast_sub_copy_fail:'خطا در کپی کردن لینک ساب', toast_node_copied:'کانفیگ نود کپی شد', toast_node_copy_fail:'خطا در کپی کانفیگ نود', toast_user_deleted:'کاربر با موفقیت حذف شد', toast_user_not_found:'کاربر یافت نشد!', toast_conn_error:'خطا در برقراری ارتباط با سرور', toast_tg_saved:'تنظیمات تلگرام ذخیره شد', toast_save_fail:'خطا در ذخیره', toast_logs_cleared:'لاگ‌ها حذف شدند', toast_logs_load_fail:'خطا در بارگذاری لاگ‌ها', toast_backup_restored:'بکاپ با موفقیت بازیابی شد ({n} کاربر)', toast_backup_fail:'خطا در بازیابی', toast_backup_download_fail:'خطا در دریافت بکاپ', toast_reset_vol_ok:'ریست {type} با موفقیت انجام شد', toast_reset_vol:'حجم', toast_reset_time:'زمان', bulk_confirm_title:'عملیات گروهی', bulk_confirm_msg:'آیا از «{action}» مطمئن هستید؟', bulk_delete_n:'حذف {n} سرویس', bulk_activate_n:'فعال‌سازی {n} سرویس', bulk_deactivate_n:'قطع {n} سرویس', bulk_reset_vol_n:'ریست حجم {n} سرویس', bulk_reset_time_n:'ریست زمان {n} سرویس', bulk_reset_req_n:'ریست ریکوئست کل {n} سرویس', bulk_enable_save_n:'فعال‌سازی ذخیره برای {n} سرویس', reset_confirm_title:'ریست سرویس', reset_confirm_msg:'آیا از ریست {type} سرویس کاربر «{name}» مطمئن هستید؟', delete_user_title:'حذف کاربر', delete_user_msg:'آیا از حذف کاربر «{name}» مطمئن هستید؟', restore_confirm_title:'بازیابی بکاپ', restore_confirm_msg:'با بازیابی بکاپ، تمام کاربران و تنظیمات فعلی جایگزین می‌شوند. ادامه می‌دهید؟', clear_logs_confirm:'آیا از حذف همه لاگ‌های پنل مطمئن هستید؟', clear_logs_title:'حذف لاگ‌ها', logout_confirm:'آیا می‌خواهید از پنل خارج شوید؟', logout_title:'خروج از پنل', alert_select_port:'⚠️ لطفا حداقل یک پورت را برای اتصال انتخاب کنید!', alert_error:'خطا: {msg}', users_load_error:'خطا در دریافت اطلاعات از سرور', users_parse_error:'خطا در پردازش اطلاعات کاربران', update_title:'به‌روزرسانی پنل', update_msg:'در حال دریافت و نصب نسخه جدید...', update_available_title:'به‌روزرسانی موجود است', update_available_msg:'نسخه جدید {remote} در دسترس است.\\nنسخه فعلی پنل شما: {current}', update_later:'بعداً', update_complete:'اپدیت با موفقیت انجام شد', update_complete_reload:'در حال بارگذاری مجدد پنل...', update_failed:'خطا در به‌روزرسانی', update_failed_msg:'به‌روزرسانی پنل انجام نشد.', update_cf_token_redirect:'توکن CF_TOKEN معتبر نیست. در حال انتقال به صفحه راه‌اندازی...', panel_update_title:'به‌روزرسانی پنل', panel_update_desc:'نسخه جدید از سرور دریافت و پنل شما اپدیت و ویژگی های جدید اضافه خواهد شد.', panel_update_current:'نسخه فعلی', panel_update_remote:'نسخه سرور', panel_update_btn:'به‌روزرسانی پنل', panel_update_confirm:'نسخه جدید از سرور مدیریت دریافت و روی ورکر شما نصب می‌شود. ادامه می‌دهید؟', panel_update_available:'نسخه {remote} موجود است — نسخه فعلی شما {current}', panel_update_latest:'پنل شما به‌روز است.', increase:'افزایش', decrease:'کاهش', cf_token_required:'توکن API کلودفلر را وارد کنید', reset_panel_fail:'خطا در بازنشانی پنل', reset_panel_yes:'بله، بازنشانی شود', about_kicker:'تیم توسعه‌ی زیرساخت آزاد', about_hero_title:'عبور از فیلترینگ، با پنل خودت', about_hero_desc:'NEXA گروهی از توسعه‌دهنده‌هاست که ابزارهای متن‌باز برای دسترسی آزاد به اینترنت می‌سازد — روی زیرساخت Cloudflare Workers، بدون واسطه، بدون فروش کانفیگ، و کاملاً در اختیار خودت.', about_kicker2:'درباره‌ی نکسا', about_title:'پنل شخصی، بدون واسطه و هزینه', about_desc:'NEXA به جای فروش سرویس، ابزار عمومی در اختیار می‌گذارد. هرکسی می‌تواند در چند دقیقه، روی اکانت Cloudflare خودش، پنل مدیریت اتصال شخصی‌اش را بالا بیاورد؛ سریع، پایدار و بدون نیاز به اعتماد به یک سرور واسط.', about_f1_title:'متن‌باز و شفاف', about_f1_desc:'کد پنل کاملاً قابل مشاهده است؛ هرچه در پنل اجرا می‌شود را می‌توانی پیش از استفاده بررسی کنی.', about_f2_title:'زیرساخت خودت', about_f2_desc:'پنل روی حساب Cloudflare شخصی تو اجرا می‌شود؛ داده‌ها و اتصال‌ها از کانال هیچ سرور واسطی عبور نمی‌کند.', about_f3_title:'راه‌اندازی سریع', about_f3_desc:'در کمتر از پنج دقیقه، بدون دانش عمیق برنامه‌نویسی، پنل شخصی‌ات آماده و در دسترس است.', about_f4_title:'بدون قصد فروش', about_f4_desc:'هدف NEXA آموزش و در دسترس گذاشتن ابزار است، نه فروش کانفیگ یا اشتراک اینترنت.', about_social:'ما را در شبکه‌های اجتماعی دنبال کنید', about_social_desc:'آموزش‌ها، به‌روزرسانی‌ها و اخبار تیم NEXA را از یوتیوب و تلگرام دنبال کن.', tg_notify_title:'اعلان‌های تلگرام', tg_enable:'فعال‌سازی اعلان تلگرام', tg_token:'توکن ربات', tg_chat_id:'شناسه چت / کاربر', tg_chat_hint:'برای دریافت شناسه چت خود به بات ما مراجعه کنید و ایدی عددی خود را دریافت کنید . ادرس بات : <a href="https://t.me/nexateam_bot" target="_blank" rel="noopener noreferrer">https://t.me/nexateam_bot</a>', tg_status_on:'روشن', tg_status_off:'خاموش', save:'ذخیره', save_success:'تنظیمات با موفقیت ذخیره شد', logs_desc:'تمام رویدادهای مهم پنل', refresh:'بروزرسانی', clear_logs:'حذف همه', loading:'در حال بارگذاری...', logs_empty:'هنوز رویدادی ثبت نشده است.', col_time:'زمان', col_action:'عملیات', col_details:'جزئیات', backup_desc:'کاربران، تمام تنظیمات پنل و لاگ فعالیت را دانلود یا بازیابی کنید.', backup_download:'دریافت بکاپ', backup_upload:'بارگذاری بکاپ', backup_includes:'تمام بخش های پنل شامل میشود.', backup_auto_title:'بکاپ خودکار روزانه', backup_auto_desc:'هر روز ساعت ۰۰:۰۰ (به وقت تهران) بکاپ کامل به تلگرام ارسال می‌شود — نیاز به تنظیم توکن و شناسه چت در بخش لاگ فعالیت دارد.', backup_tg_hint:'برای ارسال بکاپ، ابتدا توکن ربات و شناسه چت را در بخش «لاگ فعالیت» تنظیم کنید.', backup_cron_hint:'برای اجرای دقیق ساعت ۰۰:۰۰، در Cloudflare Workers یک Cron Trigger با مقدار 30 20 * * * اضافه کنید. (اگر پنل را با سایت یا ربات ساختید نیاز به تنظیم نیست .)', backup_tg_send:'ارسال بکاپ به تلگرام (تست)', backup_last_run:'آخرین بکاپ خودکار', backup_last_never:'هنوز اجرا نشده', backup_tg_sent:'بکاپ با موفقیت به تلگرام ارسال شد', backup_tg_fail:'خطا در ارسال بکاپ به تلگرام', backup_auto_saved:'تنظیمات بکاپ خودکار ذخیره شد', reset_panel_title:'بازنشانی تمام تنظیمات', reset_panel_desc:'تمام کاربران، تنظیمات پروکسی، اعلان تلگرام و لاگ‌ها حذف می‌شوند. پنل مانند اولین ورود خواهد بود. رمز عبور مدیریت حفظ می‌شود.', reset_panel_btn:'بازنشانی تمام تنظیمات', reset_panel_confirm:'با بازنشانی، تمام کاربران (به‌جز سرویس اصلی)، تنظیمات و لاگ‌ها حذف می‌شوند. این عمل قابل بازگشت نیست. ادامه می‌دهید؟', reset_panel_success:'پنل با موفقیت بازنشانی شد', pwd_info_title:'تغییر رمز عبور مدیریت', pwd_storage_note:'رمز عبور در متغیر ADMIN (نوع Text) در Cloudflare Workers ذخیره می‌شود.', pwd_current_label:'رمز عبور فعلی', pwd_new_label:'رمز عبور جدید', pwd_confirm_label:'تکرار رمز جدید', pwd_change_btn:'تغییر رمز عبور', pwd_change_success:'رمز عبور با موفقیت تغییر کرد', cf_creds_title:'تنظیمات Cloudflare API', cf_creds_note:'فقط CF_TOKEN را وارد کنید — Account ID خودکار از توکن دریافت و در ورکر ذخیره می‌شود.', cf_token_label:'CF_TOKEN', cf_ac_id_label:'Account ID', cf_ac_id_auto_hint:'نیازی به وارد کردن دستی نیست', cf_creds_save:'ذخیره توکن', cf_creds_success:'توکن با موفقیت ذخیره شد', cf_token_hint_set:'توکن فعلی تنظیم شده — برای تغییر، توکن جدید وارد کنید', panel_control_restart_title:'ری‌استارت پنل', panel_control_restart_desc:'شمارشگر آپتایم و کش‌های موقت داخلی ورکر پاک‌سازی می‌شود. کاربران و تنظیمات شما دست‌نخورده باقی می‌مانند.', panel_control_restart_btn:'ری‌استارت پنل', panel_control_disable_label:'خاموش کردن پنل مدیریت', panel_control_disable_desc:'با فعال شدن این گزینه، صفحه ورود و پنل مدیریت برای همه غیرقابل دسترسی می‌شود و صفحه وضعیت Nexa نمایش داده می‌شود. سرویس‌های VPN فعال باقی می‌مانند. برای بازگشت، آدرس را با <code dir="ltr">?unlock=1</code> باز کنید (مثال: <code dir="ltr">/admin?unlock=1</code>).', kill_all_services_label:'قطع تمامی سرویس‌ها', kill_all_services_label:'قطع تمامی سرویس‌ها', kill_all_services_desc:'با روشن شدن این گزینه تمامی سرویس‌ها متوقف و قطع خواهند شد در صورتی که مورد سو استفاده قرار گرفتید این گزینه را روشن کنید و با عوض کردن ادرس ها پنل خود را امن کنید .', kill_all_services_on:'تمامی سرویس‌ها قطع شدند', kill_all_services_off:'سرویس‌ها مجدداً فعال شدند', proxy_save_base:'تنظیمات Proxy IP ذخیره شد', proxy_change_labels:{proxy_ips:'آدرس‌های Proxy IP (CDN)'}, proxy_ips_label:'آدرس‌های Proxy IP (CDN)', proxy_ips_hint:'خالی = استفاده از پول CDN پیش‌فرض (در صورت خالی گذاشتن از ایپی پروکسی پنل استفاده میشود. و ...)', blocked_domains_title:'مسدودسازی دامنه', blocked_domains_desc:'دامنه‌هایی که وارد کنید از طریق پروکسی باز نمی‌شوند. هر دامنه در یک خط.', blocked_domains_enable:'فعال‌سازی مسدودسازی', blocked_domains_label:'لیست دامنه‌های مسدود', blocked_domains_hint:'مثال: example.com — زیردامنه‌ها هم مسدود می‌شوند', blocked_domains_save:'ذخیره مسدودسازی', blocked_domains_saved:'مسدودسازی دامنه ذخیره شد', wc_protocol_title:'تنظیمات ادرس صفحات', wc_protocol_desc:'تنظیمات انتقال، مسیر اتصال و آدرس صفحات', wc_protocol_label:'پروتکل', wc_transport_label:'حمل‌ونقل', wc_grpc_mode_label:'حالت gRPC', wc_fingerprint_label:'TLS Fingerprint', wc_tls_fragment_label:'TLS Fragment', wc_transport_path_label:'مسیر انتقال', wc_transport_path_hint:'وقتی در بخش «پروکسی CDN» یک Proxy IP ست کنید، این مقدار خودکار روی fixip_<proxy-ip> تنظیم می‌شود.', wc_var_username:'نام کاربری سرویس', wc_var_used:'حجم مصرف‌شده تا این لحظه', wc_var_total:'حجم کل سرویس (∞ یعنی نامحدود)', wc_var_dayremind:'تعداد روزهای باقی‌مانده تا انقضا', wc_var_expiry:'کل مدت اعتبار به روز (∞ یعنی نامحدود)', wc_var_port:'پورتی که این کانفیگ خاص روی آن ساخته شده', wc_var_proxyip:'آدرس Proxy IP فعلیِ تنظیم‌شده در بخش «پروکسی CDN»', wc_var_flag:'پرچم کشوری که برای این پروکسی مشخص کردی (فرمت #کدکشور جلوی آی‌پی)', adult_block_title:'مسدودسازی محتوای بزرگسال', adult_block_label:'فیلتر کردن محتوای بزرگ سال (+18)', adult_block_save:'ذخیره مسدودسازی بزرگسال', adult_block_saved:'مسدودسازی محتوای بزرگسال ذخیره شد', adult_block_save_fail:'خطا در ذخیره تنظیمات', adult_block_saving:'در حال ذخیره...', pwd_err_current_required:'رمز عبور فعلی را وارد کنید', pwd_err_minlength:'رمز عبور جدید باید حداقل ۴ کاراکتر باشد', pwd_err_mismatch:'رمز عبور جدید و تکرار آن یکسان نیستند', pwd_err_generic:'خطا در تغییر رمز عبور', dash_qr_zoom_title:'بزرگ‌نمایی QR', wc_skip_cert_label:'رد کردن اعتبارسنجی TLS', wc_random_path_label:'مسیر تصادفی', wc_path_empty_hint:'خالی = پیش‌فرض', wc_sub_page_path_label:'آدرس صفحه ساب', wc_sub_page_path_hint:'مثال : /sub/(اسم سرویس)', wc_logs_page_path_label:'آدرس صفحه لاگ‌ها', wc_logs_page_path_hint:'مثال : /logs/(نام سرویس)', resist_title:'سیاست مقاومت', resist_desc:'قوانین مسیریابی Clash/Sing-box — پروفایل ایران/سانسور بال', resist_profile_label:'پروفایل', resist_profile_custom:'سفارشی', resist_profile_iran_high:'ایران / سانسور بال', resist_domestic_bypass:'ترافیک ایران مستقیم', resist_block_quic:'مسدودسازی QUIC', resist_ad_block:'مسدودسازی تبلیغات', resist_malware_block:'مسدودسازی بدافزار', resist_phishing_block:'مسدودسازی فیشینگ', resist_bypass_sanctions:'دور زدن تحریم‌ها', resist_doh:'DNS رمزنگاری‌شده (DoH)', resist_anti_sanction_dns:'DNS ضدتحریم', resist_save_btn:'ذخیره سیاست مقاومت', wc_security_title:'امنیت', wc_security_desc:'ECH و اتصال به پنل مرکزی', wc_ech_enable_label:'فعال‌سازی ECH', wc_ech_sni_label:'ECH SNI', wc_ech_dns_label:'ECH DoH', wc_central_api_label:'Central API (اختیاری)', wc_sub_title:'اشتراک', wc_sub_desc:'نام اشتراک، آدرس تبدیل‌گر و صفحه وضعیت کاربر', wc_sub_name_label:'نام اشتراک', wc_sub_update_label:'بازه به‌روزرسانی (ساعت)', wc_admin_page_path_label:'آدرس پنل مدیریت', wc_status_path_label:'آدرس صفحه وضعیت', wc_status_path_hint:'مثلاً servicestat یا status — لینک نهایی: /آدرس/نام‌کاربر', wc_sub_converter_label:'API تبدیل اشتراک', wc_sub_config_label:'آدرس قوانین مسیریابی (.ini)', wc_sub_emoji_label:'پرچم ایموجی در نام نودها', wc_naming_title:'نام‌گذاری کانفیگ‌ها', wc_naming_desc:'در این بخش میتوانید نام کانفیگ ها را با متغیر های ارائه شده نامگذاری کنید.', wc_first_remark_label:'کانفیگ اول (غیرقابل تغییر)', wc_info_remark_label:'کانفیگ مشخصات سرویس', wc_vars_hint:'متغیرها: {username} {dayremind} {used} {total} {expiry} {port} — مثال dayremind روزهای باقیمانده را نشان می‌دهد', wc_node_remark_label:'نام کانفیگ‌های اتصال', wc_save_btn:'ذخیره تنظیمات ', coming_soon_title:'در حال توسعه', coming_soon_desc:'به زودی...', guide_android_title:'راهنمای اتصال — اندروید', guide_android_1:'اپ V2rayNG را از لینک زیر دانلود کنید:<br><a href="https://github.com/2dust/v2rayNG/releases/latest" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://github.com/2dust/v2rayNG/releases/latest</a>', guide_android_2:'اپ را باز کنید', guide_android_3:'روی آیکون + در بالا راست بزنید', guide_android_4:'گزینه <strong>Import config from clipboard</strong> را انتخاب کنید<br><span class="text-xs opacity-70">(لینک کانفیگ باید از قبل کپی شده باشد)</span>', guide_android_5:'کانفیگ در لیست ظاهر می‌شود — روی آن بزنید تا انتخاب شود', guide_android_6:'دکمه اتصال پایین صفحه را بزنید، اکنون با موفقیت متصل شدید.', guide_ios_title:'راهنمای اتصال — آیفون (iOS)', guide_ios_1:'اپ Streisand را از App Store دانلود کنید:<br><a href="https://apps.apple.com/app/streisand/id6450534064" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://apps.apple.com/app/streisand/id6450534064</a>', guide_ios_2:'اپ را باز کنید', guide_ios_3:'روی + در بالا راست بزنید', guide_ios_4:'گزینه <strong>Import from Clipboard</strong> را بزنید<br><span class="text-xs opacity-70">(لینک کانفیگ باید از قبل کپی شده باشد)</span>', guide_ios_5:'کانفیگ اضافه شد — کنارش Connect را بزنید', guide_ios_6:'در پنجره‌ای که باز می‌شود Allow را بزنید', guide_desktop_title:'راهنمای اتصال — ویندوز / مک', guide_windows:'ویندوز', guide_mac:'مک', guide_win_1:'نرم‌افزار v2rayN را دانلود کنید:<br><a href="https://github.com/2dust/v2rayN/releases/latest" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://github.com/2dust/v2rayN/releases/latest</a>', guide_win_2:'فایل zip را extract کنید و v2rayN.exe را اجرا کنید', guide_win_3:'در تسک‌بار روی آیکون برنامه راست‌کلیک کنید', guide_win_4:'گزینه + را بزنید و نام دلخواه و لینک کپی شده را وارد کنید', guide_win_5:'از منوی بالا روی گروه اشتراک زده و گزینه سوم را بزنید', guide_win_6:'برای متصل شدن در پایین صفحه گزینه پاک کردن سیستم پروکسی را روی گزینه دوم بگذارید', guide_mac_1:'اپ FoXray را از Mac App Store دانلود کنید', guide_mac_2:'روی + بزنید و Import from clipboard را انتخاب کنید', guide_mac_3:'کانفیگ را انتخاب و Connect بزنید', guide_support:'نتوانستید متصل شوید؟ <a href="https://t.me/nexateam_bot" target="_blank" rel="noopener noreferrer" class="adm-guide-support">از قسمت پشتیبانی در بات کمک بگیرید</a>'}, en: { nav_main:'Main Menu', nav_dashboard:'Dashboard', nav_users:'User Management', nav_guide:'Connection Guide', nav_node_server:'Node Server', nav_ip_scanner:'Clean IP Scanner', nav_cdn_proxy:'CDN Proxy', nav_logs:'Activity Log', nav_wireguard:'WireGuard Service', nav_warp:'WARP Service', nav_settings:'Panel Settings', nav_panel_control:'Panel Control', nav_update_panel:'Update Panel', nav_about:'About Us', nav_backup:'Panel Backup', nav_tg_channel:'Nexa Telegram Channel', nav_tg_bot:'Nexa Support Bot', nav_collapse:'Collapse', nav_expand:'Expand', nav_logout:'Logout', panel_version:'Version ${PANEL_VERSION}', panel_subtitle:'Admin Panel', aria_menu:'Menu', aria_collapse:'Collapse', aria_close:'Close', theme_toggle:'Toggle theme', dash_sub_title:'Main Subscription Link', dash_manage_btn:'Click to manage this service', dash_copy_sub:'Copy subscription', node_server_title:'Main Node', node_server_desc:'Your node on all Cloudflare TLS ports — use the Worker domain directly, separate from subscription. Copy each port.', node_server_empty:'No node configs available', node_server_copy:'Copy', node_server_qr:'QR', dash_worker_usage:'Worker Request Usage', dash_reset_label:'Reset at:', dash_reset_meta:'Requests reset daily at 3:30 AM Tehran time', dash_top_req_title:'Top total request usage', dash_top_req_empty:'No usage recorded yet', dash_ip_title:'Your IP Details', dash_via_server:'Via this server', dash_direct_ip:'Direct IP (no proxy)', dash_city:'City', dash_region:'Region', dash_country:'Country', dash_fetching_loc:'Fetching location...', dash_click_refresh:'Click refresh to fetch', dash_loading_map:'Loading map...', dash_zoom_map:'Zoom', dash_map_via_server:'Map: via server', dash_map_direct:'Map: direct IP', dash_updating:'Updating...', ip_scanner_desc:'Find the fastest Cloudflare clean IPs for your network', ip_scan_total:'Tests to run', ip_scan_keep:'Keep best', ip_scan_ports_label:'Scan ports', ip_scan_ports_required:'Select at least one port', ip_scan_start:'Start scan', ip_scan_results:'Clean IP results', cdn_cf_banner_text:'Connect your Cloudflare token once (under a minute) for auto-updates and Worker usage stats.', cdn_cf_connect:'Connect token', cdn_access_title:'Cloudflare CDN access', cdn_access_desc:'You can get the proxy IP of your choice from the Find Proxy section.', cdn_mode_label:'Mode', cdn_proxyip_label:'PROXYIP address', cdn_proxyip_hint:'One line = one location. To show a country flag in the config name, add <code>#COUNTRYCODE</code> at the end of the line (e.g. <code>1.2.3.4#DE</code> or <code>5.6.7.8:2053#US</code>)', cdn_chain_label:'Proxy address(es)', cdn_chain_hint:'One proxy per line. One = fixed IP; two-three = auto rotation and failover.', cdn_rotate_label:'Auto-rotate', cdn_rotate_off:'Off, use all', cdn_rotate_daily:'Daily', cdn_rotate_weekly:'Weekly', cdn_rotate_count:'Active count', cdn_rotate_hint:'With several proxies, a different subset is served each day/week.', cdn_verify:'Verify', cdn_save:'Save', cdn_finder_title:'Find proxies', cdn_finder_load:'Load list', cdn_finder_desc:'You can use proxies from 68 countries by loading lists.', cdn_country_label:'Country', cdn_pick_label:'Proxy', cdn_use_selected:'Use selected', cdn_proxy_saved:'CDN proxy settings saved', cdn_proxy_fetching:'Fetching list...', cdn_proxy_list_ok:'List loaded', cdn_proxy_list_stats:'{proxies} proxies — {countries} countries', cdn_proxy_use_ok:'Filled — now save', cdn_proxy_verify_proxyip:'PROXYIP needs no separate test — checked on connect. Just Save.', cdn_proxy_verify_ok:'Proxy reachable', cdn_proxy_verify_fail:'No response', cdn_proxy_enter_first:'Enter a proxy first', ip_scan_copy:'Copy results', ip_scan_save_pool:'Save to panel pool', ip_scan_foot:'Scan runs entirely in your browser', ip_scan_prep:'Preparing…', ip_scan_testing:'Testing…', ip_scan_alive:' alive', ip_scan_none:'No responsive IP found', ip_scan_found:' clean IPs found', ip_scan_saved_pool:'Saved to panel pool', ip_scan_pool_empty:'Panel scanner pool is empty', ip_scan_pool_applied:'Scanner pool IPs applied', ip_scan_copied:'Results copied', ip_scan_pool_count:'Panel pool: {count} IPs', ip_scan_pool_title:'Panel pool', ip_scan_pool_desc:'Manage IPs stored in the panel repository', ip_scan_source_title:'Clean IP source', ip_scan_source_smart:'Smart', ip_scan_source_pool:'Clean IP pool', ip_scan_smart_desc:'In Smart mode, clean IPs are fetched from this URL:', ip_scan_auto_saved:'Scan results saved to pool', ip_scan_pool_textarea_ph:'One IP per line — e.g. 1.2.3.4 or 1.2.3.4:443', ip_scan_pool_save:'Save pool', ip_scan_pool_clear:'Clear all', ip_scan_pool_saved:'Pool saved', ip_scan_pool_cleared:'Pool cleared', ip_scan_pool_remove:'Remove', ip_scan_pool_max:'Maximum 50 IPs allowed in pool', ip_scan_pool_clear_confirm:'Clear all pool IPs?', ip_scan_server_title:'Server clean IPs', ip_scan_server_desc:'IPs fetched from /clean-ip', ip_scan_server_operator:'Operator', ip_scan_server_all:'All', ip_scan_server_refresh:'Refresh', ip_scan_server_copy:'Copy', ip_scan_server_loading:'Loading…', ip_scan_server_empty:'List is empty', dash_load_error:'Failed to load dashboard', dash_loc_not_found:'Exact location not found', dash_ip_not_found:'IP not found', dash_map_unavailable:'Map unavailable', dash_map_no_coords:'Approximate map location unavailable', dash_direct_fetch_fail:'Failed to fetch direct IP', dash_direct_ip_not_found:'Direct IP not found', dash_direct_error:'Error fetching direct IP', dash_direct_not_received:'Direct IP not received', dash_main_user_not_found:'Main user not found', stat_total:'Total Users', stat_online:'Online', stat_inactive:'Inactive', stat_expired:'Expired', users_loading:'Loading users...', search_placeholder:'Search by service name...', filter_all:'All', filter_active:'Active', filter_inactive:'Inactive', filter_online:'Online', filter_offline:'Offline', filter_expired:'Expired / Finished', sort_newest:'Newest', sort_name:'Username (A–Z)', sort_usage_desc:'Highest usage', sort_usage_asc:'Lowest usage', sort_expiry_asc:'Least time remaining', bulk_selected:'{n} services selected', bulk_deselect:'Clear selection', bulk_edit:'Bulk edit', bulk_activate:'Activate', bulk_deactivate:'Disable', bulk_reset_vol:'Reset volume', bulk_reset_time:'Reset time', bulk_reset_req:'Reset total requests', bulk_save:'Save', bulk_delete:'Delete', users_list_title:'User List', users_list_desc:'Manage services', select_all:'Select all', new_user:'New user', add_user:'Add user', th_user_ops:'User & actions', th_sub_link:'Sub link', th_protocol:'Protocol', th_port:'Port', th_volume:'Volume status', th_expiry:'Expiry status', th_requests:'Request usage', th_created:'Created', empty_no_users:'No users yet', empty_create_hint:'Click "New user" to create your first user', empty_no_results:'No results found', empty_no_match:'No user matches your search', badge_main_service:'Main service', badge_online:'● Online', badge_offline:'Offline', badge_expired:'Expired', badge_vol_done:'Volume used up', badge_time_done:'Time expired', badge_disabled:'Disabled', badge_active:'Active', badge_temp:'Temporary', badge_req_done:'Requests used up', btn_sub_link:'Sub link', btn_status:'Status', btn_logs:'Logs', btn_edit:'Edit', btn_delete:'Delete', btn_qr_sub:'Subscription QR', btn_qr_sub_link:'Sub link QR', usage_label:'Used:', req_total_label:'Total usage', req_daily_label:'Daily usage', total_label:'Total:', remaining_label:'Remaining:', unlimited:'Unlimited', days_unit:'days', activate_user:'Activate user', deactivate_user:'Disable user', reset_vol_title:'Reset service volume', reset_time_title:'Reset service time', save_enabled:'Saved — auto-delete disabled', save_disabled:'Save (prevent auto-delete after expiry)', guide_tab_android:'Android', guide_tab_ios:'iPhone', guide_tab_desktop:'Windows / Mac', usage_warn_title:'Daily request limit warning', usage_warn_body:'Your Cloudflare requests today have exceeded 90,000. If you pass the free 100,000 request limit, panel access and connections will be blocked until 3:30 AM Tehran time.', usage_warn_ok:'Got it', modal_create_title:'Create new user', modal_create_sub:'Enter VPN service settings', modal_edit_title:'Edit user', modal_edit_sub:'Edit settings for "{name}"', modal_sys_title:'Manage main service', modal_sys_sub:'Only port, clean IP and Proxy IP', modal_sys_notice:'Main service is always <strong>unlimited</strong>. Only port, clean IP and Proxy IP can be changed.', um_basic_info:'Basic info', um_username:'Service name', um_volume:'Volume (GB)', um_expiry:'Expiry (days)', um_max_conn:'Total requests', um_max_req_daily:'Daily requests', um_ports:'Connection ports', um_ports_tls:'Secure ports (TLS)', um_ports_nontls:'Regular ports (Non-TLS)', um_advanced:'Advanced settings', um_clean_ip:'Cloudflare clean IP (optional)', um_ip_pool:'Clean IP pool', um_scanner_pool:'Use panel scanner pool', um_fingerprint:'Browser fingerprint simulator', um_proxy_ip:'Custom Proxy IP (optional)', um_proxy_hint:'If empty, the panel default CDN pool will be used on connect.', um_proxy_placeholder:'Empty = use panel proxy', um_name_placeholder:'e.g. ali', um_clean_ip_placeholder:'You can get a clean IP from the panel pool or server', fp_random:'Random — default', fp_randomized:'Randomized (dynamic)', cancel:'Cancel', create_user:'Create user', save_changes:'Save changes', save_settings:'Save settings', creating:'Creating...', saving:'Saving changes...', applying:'Applying...', bulk_edit_title:'Bulk edit', bulk_apply:'Apply to selected', bulk_clean_ip:'Clean IP', bulk_ip_pool:'IP pool', ip_pool_title:'Clean IP & domain pool', ip_operator:'Operator', ip_count:'Count', ip_fetch:'Fetch', qr_scan:'Scan QR code', map_title:'Approximate location map', close:'Close', confirm_title:'Confirm action', confirm_ok:'Confirm', confirm_cancel:'Cancel', confirm_yes:'Yes, proceed', confirm_yes_delete:'Yes, delete', confirm_yes_reset:'Yes, reset', confirm_yes_restore:'Yes, restore', confirm_yes_logout:'Yes, logout', toast_select_service:'Select at least one service first', toast_no_selected:'No services selected', toast_select_field:'Select at least one field to apply', toast_select_port:'Select at least one port', toast_bulk_done:'Bulk action completed on {n} services', toast_bulk_edit_done:'Bulk edit applied to {n} services', toast_bulk_fail:'Bulk action failed', toast_bulk_edit_fail:'Bulk edit failed', toast_op_fail:'Operation failed', toast_sys_always_saved:'Main service is always saved', toast_sys_status_locked:'Main service status cannot be changed', toast_sys_reset_locked:'Cannot reset main service volume or time', toast_sys_no_delete:'System user cannot be deleted', toast_sub_copied:'Subscription link copied', toast_sub_copy_fail:'Failed to copy subscription link', toast_node_copied:'Node config copied', toast_node_copy_fail:'Failed to copy node config', toast_user_deleted:'User deleted successfully', toast_user_not_found:'User not found!', toast_conn_error:'Connection error', toast_tg_saved:'Telegram settings saved', toast_save_fail:'Save failed', toast_logs_cleared:'Logs cleared', toast_logs_load_fail:'Failed to load logs', toast_backup_restored:'Backup restored ({n} users)', toast_backup_fail:'Restore failed', toast_backup_download_fail:'Failed to download backup', toast_reset_vol_ok:'{type} reset successfully', toast_reset_vol:'Volume', toast_reset_time:'Time', bulk_confirm_title:'Bulk action', bulk_confirm_msg:'Are you sure you want to "{action}"?', bulk_delete_n:'Delete {n} services', bulk_activate_n:'Activate {n} services', bulk_deactivate_n:'Disable {n} services', bulk_reset_vol_n:'Reset volume for {n} services', bulk_reset_time_n:'Reset time for {n} services', bulk_reset_req_n:'Reset total requests for {n} services', bulk_enable_save_n:'Enable save for {n} services', reset_confirm_title:'Reset service', reset_confirm_msg:'Reset {type} for user "{name}"?', delete_user_title:'Delete user', delete_user_msg:'Delete user "{name}"?', restore_confirm_title:'Restore backup', restore_confirm_msg:'Restoring will replace all current users and settings. Continue?', clear_logs_confirm:'Delete all panel activity logs?', clear_logs_title:'Delete logs', logout_confirm:'Do you want to logout?', logout_title:'Logout', alert_select_port:'⚠️ Please select at least one connection port!', alert_error:'Error: {msg}', users_load_error:'Failed to fetch data from server', users_parse_error:'Failed to process user data', update_title:'Panel update', update_msg:'Downloading and installing new version...', update_available_title:'Update available', update_available_msg:'Version {remote} is available.\\nYour current panel version: {current}', update_later:'Later', update_complete:'Panel updated successfully', update_complete_reload:'Reloading panel...', update_failed:'Update failed', update_failed_msg:'Could not update panel.', update_cf_token_redirect:'CF_TOKEN is invalid. Redirecting to setup page...', panel_update_title:'Update Panel', panel_update_desc:'A new version of the server will be downloaded and your panel will be updated and new features will be added.', panel_update_current:'Current version', panel_update_remote:'Server version', panel_update_btn:'Update Panel', panel_update_confirm:'The latest version will be downloaded from the management server and deployed to your worker. Continue?', panel_update_available:'Version {remote} is available — your current version is {current}', panel_update_latest:'Your panel is up to date.', increase:'Increase', decrease:'Decrease', cf_token_required:'Enter Cloudflare API Token', reset_panel_fail:'Failed to reset panel', reset_panel_yes:'Yes, reset', about_kicker:'Open infrastructure dev team', about_hero_title:'Bypass filtering with your own panel', about_hero_desc:'NEXA is a group of developers building open-source tools for free internet access — on Cloudflare Workers infrastructure, no middleman, no config sales, fully under your control.', about_kicker2:'About Nexa', about_title:'Your own panel, no middleman, no cost', about_desc:'Instead of selling a service, NEXA provides a public tool. Anyone can deploy their personal connection management panel on their own Cloudflare account in minutes — fast, stable, and without trusting a middleman server.', about_f1_title:'Open source & transparent', about_f1_desc:'The panel code is fully visible; you can review everything that runs in the panel before using it.', about_f2_title:'Your own infrastructure', about_f2_desc:'The panel runs on your personal Cloudflare account; data and connections do not pass through any middleman server.', about_f3_title:'Quick setup', about_f3_desc:'In less than five minutes, without deep programming knowledge, your personal panel is ready and accessible.', about_f4_title:'Not for sale', about_f4_desc:"NEXA's goal is education and providing tools, not selling configs or internet subscriptions.", about_social:'Follow us on social media', about_social_desc:'Follow NEXA tutorials, updates and news on YouTube and Telegram.', tg_notify_title:'Telegram Notifications', tg_enable:'Enable Telegram notifications', tg_token:'Bot Token', tg_chat_id:'Chat / User ID', tg_chat_hint:'To get your chat ID, visit our bot and receive your numeric ID. Bot address: <a href="https://t.me/nexateam_bot" target="_blank" rel="noopener noreferrer">https://t.me/nexateam_bot</a>', tg_status_on:'On', tg_status_off:'Off', save:'Save', save_success:'Settings saved successfully', logs_desc:'All important panel events', refresh:'Refresh', clear_logs:'Clear all', loading:'Loading...', logs_empty:'No events yet.', col_time:'Time', col_action:'Action', col_details:'Details', backup_desc:'Download or restore users, all panel settings, activity logs and connection logs.', backup_download:'Download backup', backup_upload:'Upload backup', backup_includes:'Includes: users (all fields), worker, CDN, network, Telegram, blocked domains, CF API, activity logs and connection logs', backup_auto_title:'Daily Auto Backup', backup_auto_desc:'Every day at 00:00 (Tehran time) a full backup is sent to Telegram — requires bot token and chat ID in Activity Log section.', backup_tg_hint:'To send backups, first configure bot token and chat ID in the Activity Log section.', backup_cron_hint:'For exact 00:00 runs, add a Cloudflare Workers Cron Trigger: 30 20 * * *', backup_tg_send:'Send backup to Telegram (test)', backup_last_run:'Last auto backup', backup_last_never:'Not run yet', backup_tg_sent:'Backup sent to Telegram successfully', backup_tg_fail:'Failed to send backup to Telegram', backup_auto_saved:'Auto backup settings saved', reset_panel_title:'Reset All Settings', reset_panel_desc:'All users, proxy settings, Telegram notifications and logs will be removed. The panel will be like the first visit. Admin password is kept.', reset_panel_btn:'Reset All Settings', reset_panel_confirm:'Reset will delete all users (except main service), settings and logs. This cannot be undone. Continue?', reset_panel_success:'Panel reset successfully', pwd_info_title:'Change Admin Password', pwd_storage_note:'Password is stored in the ADMIN variable (Text type) in Cloudflare Workers.', pwd_current_label:'Current password', pwd_new_label:'New password', pwd_confirm_label:'Confirm new password', pwd_change_btn:'Change password', pwd_change_success:'Password changed successfully', cf_creds_title:'Cloudflare API Settings', cf_creds_note:'Enter only CF_TOKEN — Account ID is auto-detected from the token and saved to Worker secrets.', cf_token_label:'CF_TOKEN', cf_ac_id_label:'Account ID', cf_ac_id_auto_hint:'No manual entry needed', cf_creds_save:'Save Token', cf_creds_success:'Token saved successfully', cf_token_hint_set:'Token is configured — enter a new token to change it', panel_control_restart_title:'Restart Panel', panel_control_restart_desc:'The uptime counter and internal Worker temporary caches will be cleared. Your users and settings remain untouched.', panel_control_restart_btn:'Restart Panel', panel_control_disable_label:'Disable Admin Panel', panel_control_disable_desc:'When enabled, the login page and admin panel become inaccessible to everyone and the Nexa status page is shown instead. Active VPN services remain running. To restore access, open the URL with <code dir="ltr">?unlock=1</code> (e.g. <code dir="ltr">/admin?unlock=1</code>).', kill_all_services_label:'Disconnect all services', kill_all_services_label:'Disconnect all services', kill_all_services_desc:'When enabled, all services will be suspended and disconnected', kill_all_services_on:'All services disconnected', kill_all_services_off:'Services re-enabled', proxy_save_base:'Proxy IP settings saved', proxy_change_labels:{proxy_ips:'Proxy IP addresses (CDN)'}, proxy_ips_label:'Proxy IP addresses (CDN)', proxy_ips_hint:'Empty = default CDN pool', blocked_domains_title:'Domain blocking', blocked_domains_desc:'Listed domains cannot be accessed through the proxy. One domain per line.', blocked_domains_enable:'Enable domain blocking', blocked_domains_label:'Blocked domain list', blocked_domains_hint:'Example: example.com — subdomains are blocked too', blocked_domains_save:'Save blocking rules', blocked_domains_saved:'Domain blocking saved', wc_protocol_title:'Protocol & transport', wc_protocol_desc:'Protocol, transport, connection path and page URLs', wc_protocol_label:'Protocol', wc_transport_label:'Transport', wc_grpc_mode_label:'gRPC mode', wc_fingerprint_label:'TLS fingerprint', wc_tls_fragment_label:'TLS fragment', wc_transport_path_label:'Transport path', wc_transport_path_hint:'When a Proxy IP is set in the "CDN Proxy" section, this value is automatically set to fixip_<proxy-ip>.', wc_var_username:'Service username', wc_var_used:'Used volume so far', wc_var_total:'Total service volume (∞ = unlimited)', wc_var_dayremind:'Number of days remaining until expiry', wc_var_expiry:'Total validity in days (∞ = unlimited)', wc_var_port:'The port this specific config is built on', wc_var_proxyip:'Current Proxy IP address configured in "CDN Proxy" section', wc_var_flag:'Country flag set for this proxy (format #COUNTRYCODE after the IP)', adult_block_title:'Adult content blocking', adult_block_label:'Filter adult content (+18)', adult_block_save:'Save adult blocking', adult_block_saved:'Adult content blocking saved', adult_block_save_fail:'Failed to save settings', adult_block_saving:'Saving...', pwd_err_current_required:'Please enter your current password', pwd_err_minlength:'New password must be at least 4 characters', pwd_err_mismatch:'New password and confirmation do not match', pwd_err_generic:'Failed to change password', dash_qr_zoom_title:'Zoom QR', wc_skip_cert_label:'Skip TLS verification', wc_random_path_label:'Random path', wc_path_empty_hint:'Empty = default', wc_sub_page_path_label:'Subscription page path', wc_sub_page_path_hint:'e.g. sub — URL: /path/username', wc_logs_page_path_label:'Logs page path', wc_logs_page_path_hint:'e.g. logs — URL: /path/username', resist_title:'Resistance policy', resist_desc:'Clash/Sing-box routing rules — Iran/high censorship profile', resist_profile_label:'Profile', resist_profile_custom:'Custom', resist_profile_iran_high:'Iran / High censorship', resist_domestic_bypass:'Iran direct traffic', resist_block_quic:'Block QUIC', resist_ad_block:'Block ads', resist_malware_block:'Block malware', resist_phishing_block:'Block phishing', resist_bypass_sanctions:'Bypass sanctions', resist_doh:'Encrypted DNS (DoH)', resist_anti_sanction_dns:'Anti-sanction DNS', resist_save_btn:'Save resistance policy', wc_security_title:'Security', wc_security_desc:'ECH and central panel connection', wc_ech_enable_label:'Enable ECH', wc_ech_sni_label:'ECH SNI', wc_ech_dns_label:'ECH DoH', wc_central_api_label:'Central API (optional)', wc_sub_title:'Subscription', wc_sub_desc:'Subscription name, converter API and user status page', wc_sub_name_label:'Subscription name', wc_sub_update_label:'Update interval (hours)', wc_admin_page_path_label:'Admin panel path', wc_status_path_label:'Status page path', wc_status_path_hint:'e.g. servicestat or status — final URL: /path/username', wc_sub_converter_label:'Subscription converter API', wc_sub_config_label:'Routing rules URL (.ini)', wc_sub_emoji_label:'Emoji flags in node names', wc_naming_title:'Config naming', wc_naming_desc:'Subscription config name templates — first config (not for sale) is locked', wc_first_remark_label:'First config (locked)', wc_info_remark_label:'Service info config', wc_vars_hint:'Variables: {username} {dayremind} {used} {total} {expiry} {port} — dayremind shows remaining days', wc_node_remark_label:'Connection config names', wc_save_btn:'Save worker settings', coming_soon_title:'Under development', coming_soon_desc:'Coming soon...', guide_android_title:'Connection guide — Android', guide_android_1:'Download V2rayNG from the link below:<br><a href="https://github.com/2dust/v2rayNG/releases/latest" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://github.com/2dust/v2rayNG/releases/latest</a>', guide_android_2:'Open the app', guide_android_3:'Tap the + icon at top right', guide_android_4:'Select <strong>Import config from clipboard</strong><br><span class="text-xs opacity-70">(config link must be copied first)</span>', guide_android_5:'Config appears in the list — tap to select it', guide_android_6:'Tap the connect button at the bottom — you are now connected.', guide_ios_title:'Connection guide — iPhone (iOS)', guide_ios_1:'Download Streisand from the App Store:<br><a href="https://apps.apple.com/app/streisand/id6450534064" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://apps.apple.com/app/streisand/id6450534064</a>', guide_ios_2:'Open the app', guide_ios_3:'Tap + at top right', guide_ios_4:'Tap <strong>Import from Clipboard</strong><br><span class="text-xs opacity-70">(config link must be copied first)</span>', guide_ios_5:'Config added — tap Connect next to it', guide_ios_6:'Tap Allow in the popup', guide_desktop_title:'Connection guide — Windows / Mac', guide_windows:'Windows', guide_mac:'Mac', guide_win_1:'Download v2rayN:<br><a href="https://github.com/2dust/v2rayN/releases/latest" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://github.com/2dust/v2rayN/releases/latest</a>', guide_win_2:'Extract the zip and run v2rayN.exe', guide_win_3:'Right-click the app icon in the taskbar', guide_win_4:'Tap + and enter a name and the copied link', guide_win_5:'From the top menu, open subscription group and select the third option', guide_win_6:'To connect, set "Clear system proxy" at the bottom to the second option', guide_mac_1:'Download FoXray from the Mac App Store', guide_mac_2:'Tap + and select Import from clipboard', guide_mac_3:'Select the config and tap Connect', guide_support:'Cannot connect? <a href="https://t.me/nexateam_bot" target="_blank" rel="noopener noreferrer" class="adm-guide-support">Get help from support bot</a>' } };
         function getAdminLang() {
             return localStorage.getItem('nexa-admin-lang') || 'fa';
         }
@@ -11623,6 +10549,7 @@ Commercial support is available at
             'node-server': 'https://farzadqavidel.github.io/nexa-panel/#guide-node',
             'ip-scanner': 'https://farzadqavidel.github.io/nexa-panel/#guide-ipscan',
             'cdn-proxy': 'https://farzadqavidel.github.io/nexa-panel/#guide-cdn',
+            'panel-control': 'https://farzadqavidel.github.io/nexa-panel/#guide-control',
             logs: 'https://farzadqavidel.github.io/nexa-panel/#guide-logs',
             settings: 'https://farzadqavidel.github.io/nexa-panel/#guide-settings',
         };
@@ -12236,7 +11163,7 @@ Commercial support is available at
                 deactivate: 'قطع ' + usernames.length + ' سرویس',
                 reset_volume: 'ریست حجم ' + usernames.length + ' سرویس',
                 reset_time: 'ریست زمان ' + usernames.length + ' سرویس',
-                reset_requests: 'ریست ریکوئست کل ' + usernames.length + ' سرویس',
+                reset_requests: 'ریست ریکوئست کل و روزانه ' + usernames.length + ' سرویس',
                 enable_save: 'فعال‌سازی ذخیره برای ' + usernames.length + ' سرویس'
             };
             const dangerActions = ['delete', 'reset_volume', 'reset_time', 'reset_requests'];
@@ -12396,9 +11323,9 @@ Commercial support is available at
             if (notice) notice.classList.toggle('hidden', !isSystem);
             if (notice) notice.classList.toggle('hidden', !isSystem);
             if (isSystem) {
-                document.getElementById('modal-title').innerText = 'مدیریت سرویس اصلی';
-                document.getElementById('modal-subtitle').innerText = 'فقط پورت، آیپی تمیز و Proxy IP';
-                document.getElementById('submit-btn').innerText = 'ذخیره تنظیمات';
+                document.getElementById('modal-title').innerText = adminT('modal_sys_title');
+                document.getElementById('modal-subtitle').innerText = adminT('modal_sys_sub');
+                document.getElementById('submit-btn').innerText = adminT('save_settings');
             }
         }
         function toggleModal(show) {
@@ -12413,9 +11340,9 @@ Commercial support is available at
                 isEditMode = false;
                 editingUsername = '';
                 setSystemUserModalMode(false);
-                document.getElementById('modal-title').innerText = 'ایجاد کاربر جدید';
-                document.getElementById('modal-subtitle').innerText = 'تنظیمات سرویس VPN را وارد کنید';
-                document.getElementById('submit-btn').innerText = 'ایجاد کاربر';
+                document.getElementById('modal-title').innerText = adminT('modal_create_title');
+                document.getElementById('modal-subtitle').innerText = adminT('modal_create_sub');
+                document.getElementById('submit-btn').innerText = adminT('create_user');
                 document.getElementById('input-name').disabled = false;
                 document.getElementById('create-user-form').reset();
                 if (headerIcon) headerIcon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"></path>';
@@ -12424,7 +11351,7 @@ Commercial support is available at
                 const cb80 = document.querySelector('input[name="ports"][value="80"]');
                 if (cb80) cb80.checked = true;
                 const fpSelect = document.getElementById('fingerprint-select');
-                if (fpSelect) fpSelect.value = 'random';
+                if (fpSelect) fpSelect.value = 'chrome';
             }
         }
         document.addEventListener('keydown', function(e) {
@@ -12437,9 +11364,9 @@ Commercial support is available at
             isEditMode = false;
             editingUsername = '';
             setSystemUserModalMode(false);
-            document.getElementById('modal-title').innerText = 'ایجاد کاربر جدید';
-            document.getElementById('modal-subtitle').innerText = 'تنظیمات سرویس VPN را وارد کنید';
-            document.getElementById('submit-btn').innerText = 'ایجاد کاربر';
+            document.getElementById('modal-title').innerText = adminT('modal_create_title');
+            document.getElementById('modal-subtitle').innerText = adminT('modal_create_sub');
+            document.getElementById('submit-btn').innerText = adminT('create_user');
             document.getElementById('input-name').disabled = false;
             document.getElementById('create-user-form').reset();
             const headerIcon = document.querySelector('#user-modal .adm-um-header-icon svg');
@@ -12449,7 +11376,7 @@ Commercial support is available at
             const cb80 = document.querySelector('input[name="ports"][value="80"]');
             if (cb80) cb80.checked = true;
             const fpSelect = document.getElementById('fingerprint-select');
-            if (fpSelect) fpSelect.value = 'randomized';
+            if (fpSelect) fpSelect.value = 'chrome';
             toggleModal(true);
         }
         try {
@@ -12639,15 +11566,16 @@ Commercial support is available at
                     const isSelected = window.selectedUsernames.has(user.username) ? 'checked' : '';
                     const selectedClass = window.selectedUsernames.has(user.username) ? ' is-selected' : '';
                     const isSysUser = isSystemUserClient(user);
-                    const systemBadge = isSysUser ? '<span class="adm-ub-badge info">سرویس اصلی</span>' : '';
-                    const onlineBadge = user.is_online === 1 ? '<span class="adm-ub-badge online">آنلاین</span>' : '<span class="adm-ub-badge muted">آفلاین</span>';
+                    const systemBadge = isSysUser ? '<span class="adm-ub-badge info">' + adminT('badge_main_service') + '</span>' : '';
+                    const onlineBadge = user.is_online === 1 ? '<span class="adm-ub-badge online">' + adminT('badge_online') + '</span>' : '<span class="adm-ub-badge muted">' + adminT('badge_offline') + '</span>';
                     const userInitial = (user.username || '?').charAt(0).toUpperCase();
                     const userAttr = adminUserDataAttrs(user.username);
                     const statusToggleBtn = '<button type="button" data-user-action="toggle-status"' + userAttr + ' title="' + statusBtnTitle + '" class="adm-ua-btn ' + statusBtnClass + '">' + statusBtnIcon + '</button>';
                     const sysActionBtns = isSysUser ? statusToggleBtn :
                         statusToggleBtn +
                         '<button type="button" data-user-action="reset-volume"' + userAttr + ' title="ریست حجم سرویس" class="adm-ua-btn act-reset"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg></button>' +
-                        '<button type="button" data-user-action="reset-time"' + userAttr + ' title="ریست زمان سرویس" class="adm-ua-btn act-time"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg></button>';
+                        '<button type="button" data-user-action="reset-time"' + userAttr + ' title="ریست زمان سرویس" class="adm-ua-btn act-time"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg></button>' +
+                        '<button type="button" data-user-action="reset-requests"' + userAttr + ' title="ریست ریکوئست کل و روزانه" class="adm-ua-btn act-reset"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h5M20 20v-5h-5M5.5 15a7 7 0 0011.9 2M18.5 9A7 7 0 006.6 7"></path></svg></button>';
                     const saveBtnHtml = isSysUser ? '' : '<button type="button" data-user-action="save"' + userAttr + ' title="' + saveBtnTitle + '" class="' + saveBtnClass + '"><svg fill="' + (user.is_saved === 1 ? 'currentColor' : 'none') + '" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"></path></svg></button>';
                     const deleteBtnHtml = isSysUser ? '' : '<button type="button" data-user-action="delete"' + userAttr + ' title="حذف" class="adm-ua-btn act-delete"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg></button>';
                     const deleteBtnCardHtml = isSysUser ? '' : '<button type="button" data-user-action="delete"' + userAttr + ' title="حذف" class="adm-ua-btn act-delete"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg></button>';
@@ -12656,14 +11584,12 @@ Commercial support is available at
                         '<div class="adm-sub-group">' +
                             '<div class="adm-sub-row">' +
                                 '<button type="button" data-user-action="copy-sub"' + userAttr + ' class="adm-ul-btn sub-main">' +
-                                    '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>کپی لینک ساب</button>' +
-                                '<button type="button" data-user-action="sub-qr"' + userAttr + ' title="qrcode اشتراک" class="adm-ul-btn sub-main">qrcode اشتراک</button>' +
+                                    '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>' + adminT('btn_sub_link') + '</button>' +
+                                '<button type="button" data-user-action="sub-qr"' + userAttr + ' title="qrcode اشتراک" class="adm-ul-btn sub-main">' + adminT('btn_qr_sub') + '</button>' +
                             '</div>' +
                             '<div class="adm-sub-row">' +
                                 '<button type="button" data-user-action="status"' + userAttr + ' class="adm-ul-btn blue">' +
-                                    '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>وضعیت سرویس</button>' +
-                                '<button type="button" data-user-action="logs"' + userAttr + ' class="adm-ul-btn violet">' +
-                                    '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path></svg>لاگ اتصال</button>' +
+                                    '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>' + adminT('btn_status') + '</button>' +
                             '</div>' +
                         '</div>';
                     rows.push('<tr class="admin-row' + selectedClass + '">' +
@@ -12793,27 +11719,27 @@ Commercial support is available at
             const username = decodeURIComponent(encodedUsername);
             const targetUser = (window.allUsers || []).find(function(u) { return u.username === username; });
             if (isSystemUserClient(targetUser)) {
-                showNexaToast('ریست حجم یا زمان سرویس اصلی مجاز نیست', 'error');
+                showNexaToast('ریست سرویس اصلی مجاز نیست', 'error');
                 return;
             }
-            const label = type === 'time' ? 'زمان' : 'حجم';
+            const label = type === 'time' ? 'زمان' : (type === 'requests' ? 'ریکوئست کل و روزانه' : 'حجم');
             if (!await showNexaConfirm('آیا از ریست ' + label + ' سرویس کاربر «' + username + '» مطمئن هستید؟', { title: 'ریست سرویس', danger: true, confirmText: 'بله، ریست شود' })) return;
             try {
-                const body = type === 'time' ? { reset_time: true } : { reset_volume: true };
+                const body = type === 'time' ? { reset_time: true } : (type === 'requests' ? { reset_requests: true } : { reset_volume: true });
                 const response = await fetch('/api/users/' + encodeURIComponent(username), {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body)
                 });
                 if (response.ok) {
-                    alert('✅ ریست ' + label + ' با موفقیت انجام شد');
+                    showNexaToast('ریست ' + label + ' با موفقیت انجام شد');
                     await loadUsers(true);
                 } else {
                     const errData = await response.json();
-                    alert('خطا: ' + (errData.error || 'عملیات ناموفق بود'));
+                    showNexaToast('خطا: ' + (errData.error || 'عملیات ناموفق بود'), 'error');
                 }
             } catch (err) {
-                alert('خطا در برقراری ارتباط با سرور');
+                showNexaToast('خطا در برقراری ارتباط با سرور', 'error');
             }
         }
         async function handleFormSubmit(event) {
@@ -12955,19 +11881,17 @@ function closeUsageWarning() {
             return false;
         }
         function getUserStatusBadge(user, serverTime) {
-            if (window.panelAllServicesOff) {
-                return '<span class="adm-ub-badge danger">قطع کلی</span>';
-            }
+            if (window.panelAllServicesOff) return '<span class="adm-ub-badge danger">' + adminT('badge_disabled') + '</span>';
             const now = serverTime || Date.now();
             const volExp = isVolumeExpiredUser(user);
             const timeExp = isTimeExpiredUser(user, now);
             const reqExp = isRequestLimitExceededUser(user);
-            if (reqExp) return '<span class="adm-ub-badge warn">ریکوئست تمام</span>';
-            if (volExp && timeExp) return '<span class="adm-ub-badge danger">منقضی</span>';
-            if (volExp) return '<span class="adm-ub-badge warn">حجم تمام</span>';
-            if (timeExp) return '<span class="adm-ub-badge warn">زمان تمام</span>';
-            if (user.is_active === 0) return '<span class="adm-ub-badge danger">قطع</span>';
-            return '<span class="adm-ub-badge success">فعال</span>';
+            if (reqExp) return '<span class="adm-ub-badge warn">' + adminT('badge_req_done') + '</span>';
+            if (volExp && timeExp) return '<span class="adm-ub-badge danger">' + adminT('badge_expired') + '</span>';
+            if (volExp) return '<span class="adm-ub-badge warn">' + adminT('badge_vol_done') + '</span>';
+            if (timeExp) return '<span class="adm-ub-badge warn">' + adminT('badge_time_done') + '</span>';
+            if (user.is_active === 0) return '<span class="adm-ub-badge danger">' + adminT('badge_disabled') + '</span>';
+            return '<span class="adm-ub-badge success">' + adminT('badge_active') + '</span>';
         }
         function buildVolumeProgressHtml(user, usedGb, formattedUsed) {
             if (user.limit_gb) {
@@ -12975,12 +11899,12 @@ function closeUsageWarning() {
                 const fillClass = limitPercent >= 85 ? 'vol-high' : (limitPercent >= 55 ? 'vol-mid' : 'vol-low');
                 const formattedLimit = user.limit_gb < 1 ? (user.limit_gb * 1024).toFixed(0) + ' MB' : user.limit_gb + ' GB';
                 return '<div class="adm-up-wrap">' +
-                    '<div class="adm-up-meta"><span>مصرف: ' + formattedUsed + '</span><span>کل: ' + formattedLimit + '</span></div>' +
+                    '<div class="adm-up-meta"><span>' + adminT('usage_label') + ' ' + formattedUsed + '</span><span>' + adminT('total_label') + ' ' + formattedLimit + '</span></div>' +
                     '<div class="adm-up-track"><div class="adm-up-fill ' + fillClass + '" style="width:' + limitPercent + '%"></div></div>' +
                 '</div>';
             }
             return '<div class="adm-up-wrap">' +
-                '<div class="adm-up-meta"><span>مصرف: ' + formattedUsed + '</span><span>کل: نامحدود</span></div>' +
+                '<div class="adm-up-meta"><span>' + adminT('usage_label') + ' ' + formattedUsed + '</span><span>' + adminT('total_label') + ' ' + adminT('unlimited') + '</span></div>' +
                 '<div class="adm-up-track"><div class="adm-up-fill vol-unlimited" style="width:100%"></div></div>' +
             '</div>';
         }
@@ -12988,12 +11912,12 @@ function closeUsageWarning() {
             if (user.expiry_days) {
                 const fillClass = daysPercent <= 20 ? 'exp-low' : (daysPercent <= 50 ? 'exp-mid' : 'exp-high');
                 return '<div class="adm-up-wrap">' +
-                    '<div class="adm-up-meta"><span>باقی‌مانده: ' + daysRemaining + ' روز</span><span>کل: ' + user.expiry_days + ' روز</span></div>' +
+                    '<div class="adm-up-meta"><span>' + adminT('remaining_label') + ' ' + daysRemaining + ' ' + adminT('days_unit') + '</span><span>' + adminT('total_label') + ' ' + user.expiry_days + ' ' + adminT('days_unit') + '</span></div>' +
                     '<div class="adm-up-track"><div class="adm-up-fill ' + fillClass + '" style="width:' + daysPercent + '%"></div></div>' +
                 '</div>';
             }
             return '<div class="adm-up-wrap">' +
-                '<div class="adm-up-meta"><span>باقی‌مانده: نامحدود</span><span>کل: نامحدود</span></div>' +
+                '<div class="adm-up-meta"><span>' + adminT('remaining_label') + ' ' + adminT('unlimited') + '</span><span>' + adminT('total_label') + ' ' + adminT('unlimited') + '</span></div>' +
                 '<div class="adm-up-track"><div class="adm-up-fill exp-unlimited" style="width:100%"></div></div>' +
             '</div>';
         }
@@ -13001,24 +11925,24 @@ function closeUsageWarning() {
             const usedTotal = user.used_requests_total != null ? user.used_requests_total : (user.used_requests || 0);
             const usedToday = user.used_requests_today != null ? user.used_requests_today : 0;
             const totalHtml = user.max_requests
-                ? buildRequestBarHtml('مصرف کل', formatReqCount(usedTotal), formatReqCount(user.max_requests), usedTotal, user.max_requests)
-                : buildRequestBarHtml('مصرف کل', formatReqCount(usedTotal), 'نامحدود', 0, 0, true);
+                ? buildRequestBarHtml(adminT('req_total_label'), formatReqCount(usedTotal), formatReqCount(user.max_requests), usedTotal, user.max_requests)
+                : buildRequestBarHtml(adminT('req_total_label'), formatReqCount(usedTotal), adminT('unlimited'), 0, 0, true);
             const dailyHtml = user.max_requests_daily
-                ? buildRequestBarHtml('مصرف روزانه', formatReqCount(usedToday), formatReqCount(user.max_requests_daily), usedToday, user.max_requests_daily)
-                : buildRequestBarHtml('مصرف روزانه', formatReqCount(usedToday), 'نامحدود', 0, 0, true);
+                ? buildRequestBarHtml(adminT('req_daily_label'), formatReqCount(usedToday), formatReqCount(user.max_requests_daily), usedToday, user.max_requests_daily)
+                : buildRequestBarHtml(adminT('req_daily_label'), formatReqCount(usedToday), adminT('unlimited'), 0, 0, true);
             return '<div class="space-y-2">' + totalHtml + dailyHtml + '</div>';
         }
         function buildRequestBarHtml(label, usedLabel, maxLabel, used, max, unlimited) {
             if (unlimited) {
                 return '<div class="adm-up-wrap">' +
-                    '<div class="adm-up-meta"><span>' + label + ': ' + usedLabel + '</span><span>کل: ' + maxLabel + '</span></div>' +
+                    '<div class="adm-up-meta"><span>' + label + ': ' + usedLabel + '</span><span>' + adminT('total_label') + ' ' + maxLabel + '</span></div>' +
                     '<div class="adm-up-track"><div class="adm-up-fill vol-unlimited" style="width:100%"></div></div>' +
                 '</div>';
             }
             const limitPercent = Math.min((used / max) * 100, 100);
             const fillClass = limitPercent >= 85 ? 'vol-high' : (limitPercent >= 55 ? 'vol-mid' : 'vol-low');
             return '<div class="adm-up-wrap">' +
-                '<div class="adm-up-meta"><span>' + label + ': ' + usedLabel + '</span><span>کل: ' + maxLabel + '</span></div>' +
+                '<div class="adm-up-meta"><span>' + label + ': ' + usedLabel + '</span><span>' + adminT('total_label') + ' ' + maxLabel + '</span></div>' +
                 '<div class="adm-up-track"><div class="adm-up-fill ' + fillClass + '" style="width:' + limitPercent + '%"></div></div>' +
             '</div>';
         }
@@ -13243,18 +12167,9 @@ function closeUsageWarning() {
             const path = getWorkerPagePath(cfg, 'statusPagePath', 'servicestat');
             return window.location.origin + '/' + path + '/' + encodeURIComponent(username);
         }
-        function getLogsLink(username) {
-            const cfg = getPanelWorkerConfig();
-            const path = getWorkerPagePath(cfg, 'logsPagePath', 'logs');
-            return window.location.origin + '/' + path + '/' + encodeURIComponent(username);
-        }
         function openStatusPage(encodedUsername) {
             const username = decodeURIComponent(encodedUsername);
             window.open(getStatusLink(username), '_blank');
-        }
-        function openLogsPage(encodedUsername) {
-            const username = decodeURIComponent(encodedUsername);
-            window.open(getLogsLink(username), '_blank');
         }
         function copySubLink(encodedUsername) {
             const username = decodeURIComponent(encodedUsername);
@@ -13281,9 +12196,9 @@ function closeUsageWarning() {
             editingUsername = username;
             setSystemUserModalMode(isSys);
             if (!isSys) {
-                document.getElementById('modal-title').innerText = 'ویرایش کاربر';
-                document.getElementById('modal-subtitle').innerText = 'ویرایش تنظیمات «' + username + '»';
-                document.getElementById('submit-btn').innerText = 'ذخیره تغییرات';
+                document.getElementById('modal-title').innerText = adminT('modal_edit_title');
+                document.getElementById('modal-subtitle').innerText = adminT('modal_edit_sub').replace('{name}', username);
+                document.getElementById('submit-btn').innerText = adminT('save_changes');
             }
             const headerIcon = document.querySelector('#user-modal .adm-um-header-icon svg');
             if (headerIcon) headerIcon.innerHTML = isSys
@@ -13685,7 +12600,6 @@ function closeUsageWarning() {
                 setWorkerConfigField('wc-admin-page-path', cfg.adminPagePath, defs.adminPagePath);
                 setWorkerConfigField('wc-status-page-path', cfg.statusPagePath, defs.statusPagePath);
                 setWorkerConfigField('wc-sub-page-path', cfg.subPagePath, defs.subPagePath);
-                setWorkerConfigField('wc-logs-page-path', cfg.logsPagePath, defs.logsPagePath);
                 setWorkerConfigField('wc-sub-converter-api', cfg.subConverterApi, defs.subConverterApi);
                 setWorkerConfigField('wc-sub-config-url', cfg.subConfigUrl, defs.subConfigUrl);
                 setWorkerConfigField('wc-info-remark', cfg.infoRemarkTemplate, defs.infoRemarkTemplate);
@@ -13716,7 +12630,6 @@ function closeUsageWarning() {
                     adminPagePath: getWorkerFieldValue('wc-admin-page-path', 'adminPagePath'),
                     statusPagePath: getWorkerFieldValue('wc-status-page-path', 'statusPagePath'),
                     subPagePath: getWorkerFieldValue('wc-sub-page-path', 'subPagePath'),
-                    logsPagePath: getWorkerFieldValue('wc-logs-page-path', 'logsPagePath'),
                     subConverterApi: getWorkerFieldValue('wc-sub-converter-api', 'subConverterApi'),
                     subConfigUrl: getWorkerFieldValue('wc-sub-config-url', 'subConfigUrl'),
                     infoRemarkTemplate: getWorkerFieldValue('wc-info-remark', 'infoRemarkTemplate'),
@@ -14147,7 +13060,7 @@ async function saveScannerPool() {
 async function clearScannerPool() {
     const lines = readScannerPoolFromTextarea();
     if (!lines.length) return;
-    if (!confirm(ipScanT('ip_scan_pool_clear_confirm'))) return;
+    if (!await showNexaConfirm(ipScanT('ip_scan_pool_clear_confirm'), { title: ipScanT('ip_scan_pool_clear'), danger: true, confirmText: ipScanT('ip_scan_pool_clear') })) return;
     try {
         const res = await fetch('/api/scanner-pool', {
             method: 'POST',
@@ -14830,7 +13743,6 @@ function applySelectedIps() {
         window.deleteUser = deleteUser;
         window.editUser = editUser;
         window.openStatusPage = openStatusPage;
-        window.openLogsPage = openLogsPage;
         window.openCreateModal = openCreateModal;
         window.toggleModal = toggleModal;
         window.handleFormSubmit = handleFormSubmit;
@@ -14922,7 +13834,7 @@ function applySelectedIps() {
     </style>
 </head>
 <body class="user-shell-page">
-    ${NEXA_USER_THEME_TOGGLE}
+    ${NEXA_USER_THEME_TOGGLE}${NEXA_PUBLIC_LANG_TOGGLE}
     <div class="st-shell">
         <div class="st-topbar">
             <div class="st-brand">
@@ -14952,6 +13864,7 @@ function applySelectedIps() {
             </section>
         </div>
     </div>
+${NEXA_PUBLIC_I18N_SCRIPT}
 </body>
 </html>`,
   status: `<!DOCTYPE html>
@@ -14975,7 +13888,7 @@ function applySelectedIps() {
         ${NEXA_TOAST_CSS}
     </style>
 </head>
-<body class="svc-page">
+<body class="svc-page svc-status-page">
     <div class="svc-wrap">
         <header class="svc-header">
             <div class="svc-brand">
@@ -14986,7 +13899,7 @@ function applySelectedIps() {
                 </div>
             </div>
             <div class="svc-header-actions">
-                ${NEXA_SERVICE_THEME_TOGGLE}
+                ${NEXA_SERVICE_THEME_TOGGLE}${NEXA_PUBLIC_LANG_TOGGLE}
             </div>
         </header>
         <div id="svc-announce-banner" class="svc-announce-banner hidden" role="status" aria-live="polite">
@@ -15272,38 +14185,19 @@ function applySelectedIps() {
         function getVlessLink() {
             const u = window.statusUser;
             const host = getHost();
-            var ips = resolveConfigIps(host, u.ips);
-            var ports = String(u.port || '443').split(',').map(function(p) { return p.trim(); }).filter(function(p) { return p.length > 0; });
-            var fp = u.fingerprint || 'random';
-            var links = [];
-            var firstRemark = buildFirstRemark();
-            var secondRemark = buildSecondRemark(u);
-            var inactive = isServiceInactive(u);
-            var cfg = getStatusWorkerConfig();
-            var tc = getStatusTransportConfig(cfg);
-            var pathEnc = encodeURIComponent(cfg.transportPath || '/in_config_foroshi_nist');
-            var proto = cfg.protocolType === 'mixed' ? 'vless' : (cfg.protocolType || 'vless');
-            var fakeLink = function(remark) {
-                return proto + '://' + (u.uuid || '') + '@127.0.0.1:17?encryption=none&security=none&type=' + tc.typeParam + '&' + tc.hostField + '=' + host + '&' + tc.pathField + '=' + pathEnc + '#' + encodeURIComponent(remark);
-            };
-            links.push(fakeLink(firstRemark));
-            links.push(fakeLink(secondRemark));
-            if (!inactive) {
-                var nodeIndex = 0;
-                ips.forEach(function(ip) {
-                    ports.forEach(function(portStr) {
-                        var nodeTemplate = cfg.nodeRemarkTemplate || '{username}';
-                        var remark = applyRemarkTemplateClient(nodeTemplate, u, Date.now(), { port: portStr });
-                        var nodeProto = cfg.protocolType || 'vless';
-                        if (nodeProto === 'mixed') {
-                            nodeProto = ['vless', 'trojan', 'ss'][nodeIndex % 3];
-                            nodeIndex++;
-                        }
-                        links.push(buildStatusNodeLink(cfg, u, ip, portStr, fp, remark, nodeProto, host));
-                    });
-                });
-            }
-            return links.join('\\n');
+            const cfg = getStatusWorkerConfig();
+            const fp = u.fingerprint || 'random';
+            // کپی کانفیگ مستقیم فقط یک نود اصلی با دامنه سرویس، پورت 443 و نام خود سرویس است.
+            return buildStatusNodeLink(
+                cfg,
+                u,
+                host,
+                '443',
+                fp,
+                String(u.username || 'Nexa Service'),
+                'vless',
+                host
+            );
         }
         function copyVlessConfig() {
             navigator.clipboard.writeText(getDirectVlessLinks()).then(() => showNexaToast('کانفیگ VLESS با موفقیت کپی شد')).catch(() => showNexaToast('خطا در کپی کردن کانفیگ', 'error'));
@@ -15396,6 +14290,7 @@ function applySelectedIps() {
     </script>
     ${NEXA_TOAST_HTML}
     ${NEXA_TOAST_SCRIPT}
+${NEXA_PUBLIC_I18N_SCRIPT}
 </body>
 </html>`,
   guide: `<!DOCTYPE html>
@@ -15418,7 +14313,7 @@ function applySelectedIps() {
         ${NEXA_SERVICE_PAGE_CSS}
     </style>
 </head>
-<body class="svc-page">
+<body class="svc-page svc-guide-page">
     <div class="svc-wrap">
         <header class="svc-header">
             <div class="svc-brand">
@@ -15429,22 +14324,11 @@ function applySelectedIps() {
                 </div>
             </div>
             <div class="svc-header-actions">
-                <button type="button" onclick="history.back()" class="svc-back-btn">← بازگشت</button>
+                
                 ${NEXA_SERVICE_THEME_TOGGLE}
             </div>
         </header>
         <div class="svc-grid">
-            <aside class="svc-card svc-sidebar">
-                <div>
-                    <div class="svc-label">راهنما</div>
-                    <div class="svc-username" style="font-family: inherit">آموزش اتصال</div>
-                </div>
-                <p class="svc-desc">پلتفرم مورد نظر خود را انتخاب کنید و مراحل را گام‌به‌گام دنبال کنید.</p>
-                <a href="https://t.me/irnexa" target="_blank" class="svc-tg-link">
-                    <svg class="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.94-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.37.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .24z"/></svg>
-                    کانال تلگرام irnexa@
-                </a>
-            </aside>
             <section class="space-y-4">
                 <div class="svc-tabs">
                     <button type="button" onclick="showTab('android')" id="tab-android" class="svc-tab active">
@@ -15547,169 +14431,7 @@ function applySelectedIps() {
             });
         }
     </script>
-</body>
-</html>`,
-  serviceLogs: `<!DOCTYPE html>
-<html lang="fa" dir="rtl">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    ${NEXA_THEME_COLOR_USER}
-    ${NEXA_FAVICON_TAGS}
-    ${NEXA_THEME_COLOR_SYNC_SCRIPT}
-    <title>لاگ اتصال</title>
-    ${NEXA_USER_THEME_SCRIPT}
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet" type="text/css" />
-    <script>
-        tailwind.config = { darkMode: 'class', theme: { extend: { fontFamily: { sans: ['Vazirmatn', 'sans-serif'] } } } }
-    </script>
-    <style>
-        ${NEXA_SERVICE_PAGE_VARS}
-        ${NEXA_SERVICE_PAGE_CSS}
-        ${NEXA_CONFIRM_CSS}
-    </style>
-</head>
-<body class="svc-page">
-    <div class="svc-wrap">
-        <header class="svc-header">
-            <div class="svc-brand">
-                <img src="${NEXA_LOGO_URL}" alt="Nexa Team" class="svc-brand-logo">
-                <div>
-                    <div class="svc-brand-title">Nexa Team</div>
-                    <div class="svc-brand-sub">لاگ اتصال</div>
-                </div>
-            </div>
-            <div class="svc-header-actions">
-                <a href="/admin" class="svc-back-btn">← بازگشت</a>
-                ${NEXA_SERVICE_THEME_TOGGLE}
-            </div>
-        </header>
-        <div class="svc-grid">
-            <aside class="svc-card svc-sidebar">
-                <div>
-                    <div class="svc-label">نام سرویس</div>
-                    <div id="display-username" class="svc-username">-</div>
-                </div>
-                <p class="svc-desc">تاریخچه اتصال و رویدادهای مرتبط با این سرویس در این بخش نمایش داده می‌شود.</p>
-                <div class="flex items-center gap-2 flex-wrap">
-                    <span id="log-count" class="svc-badge-count">۰ رویداد</span>
-                    <button onclick="refreshLogs()" class="svc-btn-sm" title="بروزرسانی">بروزرسانی</button>
-                    <button onclick="clearAllLogs()" class="svc-btn-sm danger" title="حذف همه">حذف همه</button>
-                </div>
-            </aside>
-            <section class="svc-card svc-panel">
-                <div class="svc-section-title">
-                    <span class="svc-stat-icon"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path></svg></span>
-                    تاریخچه اتصال
-                </div>
-                <div id="logs-loading" class="svc-empty">در حال بارگذاری...</div>
-                <div id="logs-empty" class="hidden svc-empty">هنوز اتصالی ثبت نشده است.</div>
-                <div id="logs-list" class="hidden svc-log-list"></div>
-            </section>
-        </div>
-    </div>
-    <script>
-        /* {{USERNAME_PLACEHOLDER}} */
-        function formatLogTime(iso) {
-            if (!iso) return '-';
-            try {
-                var d = new Date(iso);
-                var date = d.toLocaleDateString('fa-IR', { year: 'numeric', month: '2-digit', day: '2-digit' });
-                var time = d.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
-                return date + ' — ' + time;
-            } catch (e) { return iso; }
-        }
-        function escapeHtml(str) {
-            return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        }
-        function eventTypeBadge(type) {
-            var t = String(type || 'اتصال');
-            var cls = 'default';
-            var itemCls = '';
-            if (t.indexOf('پینگ') >= 0) { cls = 'ping'; itemCls = 'type-ping'; }
-            else if (t.indexOf('دریافت کانفیگ') >= 0) { cls = 'config'; itemCls = 'type-config'; }
-            else if (t.indexOf('IP') >= 0) { cls = 'ip'; itemCls = 'type-ip'; }
-            else if (t.indexOf('اتصال') >= 0) { cls = 'connect'; itemCls = 'type-connect'; }
-            return { badge: '<span class="svc-log-badge ' + cls + '">' + escapeHtml(t) + '</span>', itemCls: itemCls };
-        }
-        function renderLogs(logs) {
-            const loading = document.getElementById('logs-loading');
-            const empty = document.getElementById('logs-empty');
-            const list = document.getElementById('logs-list');
-            const countEl = document.getElementById('log-count');
-            loading.classList.add('hidden');
-            countEl.textContent = logs.length + ' رویداد';
-            if (!logs.length) {
-                list.classList.add('hidden');
-                empty.classList.remove('hidden');
-                return;
-            }
-            empty.classList.add('hidden');
-            list.classList.remove('hidden');
-            list.innerHTML = logs.map(function(log) {
-                var ev = eventTypeBadge(log.event_type);
-                return '<div class="svc-log-item ' + ev.itemCls + '">' +
-                    '<div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">' +
-                        '<div class="flex items-center gap-3 min-w-0">' +
-                            '<span class="svc-stat-icon flex-shrink-0"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path></svg></span>' +
-                            '<div class="min-w-0">' +
-                                '<div class="flex items-center gap-2 flex-wrap mb-1">' + ev.badge +
-                                    '<span class="svc-log-ip">' + escapeHtml(log.ip || 'نامشخص') + '</span>' +
-                                '</div>' +
-                                (log.details ? '<div class="svc-log-details">' + escapeHtml(log.details) + '</div>' : '') +
-                            '</div>' +
-                        '</div>' +
-                        '<span class="svc-log-time sm:text-left">' + escapeHtml(formatLogTime(log.created_at)) + '</span>' +
-                    '</div>' +
-                '</div>';
-            }).join('');
-        }
-        function getServiceLogsPagePath() {
-            const path = String(window.serviceLogsPagePath || 'logs').trim().toLowerCase().replace(new RegExp('^/+|/+$', 'g'), '').replace(/[^a-z0-9_-]/g, '').slice(0, 40);
-            return path || 'logs';
-        }
-        function getServiceLogsLoginUrl() {
-            return '/' + getServiceLogsPagePath() + '/' + encodeURIComponent(window.serviceLogUsername);
-        }
-        async function refreshLogs() {
-            document.getElementById('logs-loading').classList.remove('hidden');
-            document.getElementById('logs-list').classList.add('hidden');
-            document.getElementById('logs-empty').classList.add('hidden');
-            try {
-                const res = await fetch('/api/connection-logs/' + encodeURIComponent(window.serviceLogUsername));
-                if (res.status === 401) {
-                    window.location.href = getServiceLogsLoginUrl();
-                    return;
-                }
-                const data = await res.json();
-                renderLogs(data.logs || []);
-            } catch (e) {
-                document.getElementById('logs-loading').textContent = 'خطا در بارگذاری لاگ‌ها';
-            }
-        }
-        async function clearAllLogs() {
-            if (!await showNexaConfirm('آیا از حذف همه لاگ‌های اتصال این سرویس مطمئن هستید؟', { title: 'حذف لاگ‌ها', danger: true, confirmText: 'بله، حذف شوند' })) return;
-            try {
-                const res = await fetch('/api/connection-logs/' + encodeURIComponent(window.serviceLogUsername), { method: 'DELETE' });
-                if (res.status === 401) {
-                    window.location.href = getServiceLogsLoginUrl();
-                    return;
-                }
-                if (res.ok) renderLogs([]);
-                else alert('خطا در حذف لاگ‌ها');
-            } catch (e) {
-                alert('خطا در برقراری ارتباط با سرور');
-            }
-        }
-        document.addEventListener('DOMContentLoaded', function() {
-            if (!window.serviceLogUsername) return;
-            document.getElementById('display-username').textContent = window.serviceLogUsername;
-            refreshLogs();
-        });
-    </script>
-    ${NEXA_CONFIRM_HTML}
-    ${NEXA_CONFIRM_SCRIPT}
+${NEXA_PUBLIC_I18N_SCRIPT}
 </body>
 </html>`,
   logs: `<!DOCTYPE html>
@@ -15749,6 +14471,7 @@ function applySelectedIps() {
                 <h1 class="text-lg font-bold">لاگ فعالیت‌های پنل</h1>
             </div>
             <div class="flex items-center gap-3">
+                ${NEXA_PUBLIC_LANG_TOGGLE}
                 <button id="theme-toggle" class="p-2 rounded-lg bg-gray-100 dark:bg-amoled-input border border-gray-200 dark:border-amoled-border hover:bg-gray-200 dark:hover:bg-zinc-800 transition">
                     <svg id="sun-icon" class="w-5 h-5 hidden dark:block text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707m12.728 0l-.707-.707M6.343 6.343l-.707-.707M14 12a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
                     <svg id="moon-icon" class="w-5 h-5 block dark:hidden text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
@@ -15866,6 +14589,7 @@ function applySelectedIps() {
     </script>
     ${NEXA_CONFIRM_HTML}
     ${NEXA_CONFIRM_SCRIPT}
+${NEXA_PUBLIC_I18N_SCRIPT}
 </body>
 </html>`
 };
