@@ -6672,11 +6672,17 @@ const NEXA_ADMIN_SHELL_CSS = `
             background: color-mix(in srgb, var(--admin-primary) 14%, transparent);
             border: 1px solid color-mix(in srgb, var(--admin-primary) 35%, var(--admin-border));
         }
-        .adm-ip-scanner-wrap { max-width: 68rem; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 1rem; align-items: start; }
-        .adm-ip-scanner-panel.hero { grid-column: 1; grid-row: 1; }
-        .adm-ip-source-panel { grid-column: 2; grid-row: 1; }
-        .adm-ip-scanner-panel.adm-ip-scanner-results, .adm-ip-scanner-wrap > p { grid-column: 1 / -1; }
-        @media (max-width: 52rem) { .adm-ip-scanner-wrap { display: block; max-width: 42rem; } }
+        .adm-ip-scanner-wrap { max-width: 42rem; margin: 0 auto; }
+        #section-ip-scanner .adm-ip-scanner-wrap { max-width: 68rem; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 1rem; align-items: start; }
+        #section-ip-scanner .adm-ip-scanner-panel.hero { grid-column: 1; grid-row: 1; }
+        #section-ip-scanner .adm-ip-source-panel { grid-column: 2; grid-row: 1; }
+        #section-ip-scanner .adm-ip-scanner-panel.adm-ip-scanner-results, #section-ip-scanner .adm-ip-scanner-wrap > p { grid-column: 1 / -1; }
+        #section-cdn-proxy .adm-ip-scanner-wrap { max-width: 68rem; }
+        @media (max-width: 52rem) {
+            #section-ip-scanner .adm-ip-scanner-wrap { display: block; max-width: 42rem; }
+            #section-cdn-proxy .adm-ip-scanner-wrap { max-width: 42rem; }
+            #section-cdn-proxy .adm-cdn-proxy-stack { grid-template-columns: 1fr; }
+        }
         .adm-ip-scanner-panel {
             background: var(--admin-card); border: 1px solid var(--admin-border); border-radius: 1.15rem;
             box-shadow: var(--admin-shadow); padding: 1.35rem; margin-bottom: 1rem;
@@ -6772,7 +6778,8 @@ const NEXA_ADMIN_SHELL_CSS = `
             color: var(--admin-text); padding: 0.6rem 0.75rem; font-size: 0.82rem; font-weight: 700;
         }
         .adm-ip-server-field select:focus { outline: none; border-color: var(--admin-primary); }
-        .adm-cdn-proxy-stack { display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem; }
+        .adm-cdn-proxy-stack { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; margin-top: 1rem; }
+        .adm-cdn-proxy-stack .adm-ip-scanner-panel { margin-bottom: 0; }
         .adm-cdn-cf-banner {
             display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75rem;
             padding: 0.85rem 1rem; border-radius: 0.85rem;
