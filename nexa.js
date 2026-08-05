@@ -56,7 +56,7 @@ const REMOTE_MANIFEST_ANNOUNCE_URL = "https://raw.githubusercontent.com/farzadqa
 const REMOTE_UPDATE_SCRIPT_URL = "https://raw.githubusercontent.com/farzadqavidel/nexa-panel/refs/heads/main/nexa.js";
 const REMOTE_CLEAN_IPS_URL = "https://raw.githubusercontent.com/farzadqavidel/nexa-panel/refs/heads/main/resources/clean-ip.json";
 
-const PANEL_VERSION = "2.8.4";
+const PANEL_VERSION = "2.8.6";
 const CLEAN_IPS_CACHE_TTL_MS_MS = 60 * 60 * 1000;
 const MANIFEST_CACHE_TTL_MS = 5 * 60 * 1000;
 const MANIFEST_FETCH_TIMEOUT_MS = 8000;
@@ -6546,7 +6546,6 @@ const NEXA_ADMIN_SHELL_CSS = `
             padding: 0.55rem 0.75rem; border-radius: 0.75rem; font-size: 0.78rem; font-weight: 800;
             border: 1.5px solid transparent; transition: all 0.2s ease; cursor: pointer; user-select: none;
         }
-        .port-chip-check { display: none; width: 1rem; height: 1rem; flex-shrink: 0; }
         .port-chip-tls {
             border-color: rgba(5, 150, 105, 0.55); background: rgba(16, 185, 129, 0.16); color: #047857;
         }
@@ -6556,17 +6555,9 @@ const NEXA_ADMIN_SHELL_CSS = `
         .port-chip-tls:hover { background: rgba(16, 185, 129, 0.24); border-color: rgba(5, 150, 105, 0.75); }
         html.dark .port-chip-tls:hover { background: rgba(5, 150, 105, 0.38); border-color: #34d399; }
         .peer:checked ~ .port-chip-tls {
-            background: linear-gradient(135deg, rgba(5, 150, 105, 0.32), rgba(16, 185, 129, 0.22));
-            border-color: #059669; color: #064e3b;
-            box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.3), inset 0 1px 0 rgba(255,255,255,0.15);
+            background: linear-gradient(135deg, #10b981, #059669); border-color: transparent; color: #ffffff;
+            box-shadow: 0 3px 14px -3px rgba(16, 185, 129, 0.65);
         }
-        html.dark .peer:checked ~ .port-chip-tls {
-            background: linear-gradient(135deg, rgba(5, 150, 105, 0.65), rgba(4, 120, 87, 0.45));
-            border-color: #6ee7b7; color: #ecfdf5;
-            box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.45), 0 0 16px rgba(16, 185, 129, 0.35);
-        }
-        .peer:checked ~ .port-chip-tls .port-chip-check { display: block; color: #059669; }
-        html.dark .peer:checked ~ .port-chip-tls .port-chip-check { color: #d1fae5; }
         .port-chip-nontls {
             border-color: rgba(124, 58, 237, 0.55); background: rgba(139, 92, 246, 0.16); color: #6d28d9;
         }
@@ -6576,17 +6567,9 @@ const NEXA_ADMIN_SHELL_CSS = `
         .port-chip-nontls:hover { background: rgba(139, 92, 246, 0.24); border-color: rgba(124, 58, 237, 0.75); }
         html.dark .port-chip-nontls:hover { background: rgba(109, 40, 217, 0.38); border-color: #a78bfa; }
         .peer:checked ~ .port-chip-nontls {
-            background: linear-gradient(135deg, rgba(124, 58, 237, 0.32), rgba(139, 92, 246, 0.22));
-            border-color: #7c3aed; color: #4c1d95;
-            box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.3), inset 0 1px 0 rgba(255,255,255,0.15);
+            background: linear-gradient(135deg, #8b5cf6, #7c3aed); border-color: transparent; color: #ffffff;
+            box-shadow: 0 3px 14px -3px rgba(139, 92, 246, 0.65);
         }
-        html.dark .peer:checked ~ .port-chip-nontls {
-            background: linear-gradient(135deg, rgba(124, 58, 237, 0.65), rgba(109, 40, 217, 0.45));
-            border-color: #c4b5fd; color: #f5f3ff;
-            box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.45), 0 0 16px rgba(139, 92, 246, 0.3);
-        }
-        .peer:checked ~ .port-chip-nontls .port-chip-check { display: block; color: #7c3aed; }
-        html.dark .peer:checked ~ .port-chip-nontls .port-chip-check { color: #ede9fe; }
         .num-stepper { position: relative; }
         .num-stepper-input {
             -moz-appearance: textfield;
@@ -11137,14 +11120,13 @@ Commercial support is available at
             if (!tlsContainer || !nonTlsContainer) return;
             const inputName = opts.inputName || 'ports';
             const defaultTls = opts.defaultTls !== undefined ? opts.defaultTls : ['443'];
-            const defaultNonTls = opts.defaultNonTls !== undefined ? opts.defaultNonTls : ['80'];
+            const defaultNonTls = opts.defaultNonTls !== undefined ? opts.defaultNonTls : [];
             tlsContainer.innerHTML = tlsPorts.map(function(port) {
                 const isCheckedDefault = defaultTls.includes(port) ? 'checked' : '';
                 return '<label class="relative cursor-pointer block">' +
                     '<input type="checkbox" name="' + inputName + '" value="' + port + '" ' + isCheckedDefault + ' class="peer sr-only">' +
                     '<div class="port-chip port-chip-tls">' +
                         '<span>' + port + '</span>' +
-                        '<svg class="port-chip-check" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg>' +
                     '</div>' +
                 '</label>';
             }).join('');
@@ -11154,7 +11136,6 @@ Commercial support is available at
                     '<input type="checkbox" name="' + inputName + '" value="' + port + '" ' + isCheckedDefault + ' class="peer sr-only">' +
                     '<div class="port-chip port-chip-nontls">' +
                         '<span>' + port + '</span>' +
-                        '<svg class="port-chip-check" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg>' +
                     '</div>' +
                 '</label>';
             }).join('');
