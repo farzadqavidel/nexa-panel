@@ -41,13 +41,8 @@ const FALLBACK_PROXY_HOSTS = [
   'proxyip.cmliussss.net'
 ];
 
-// --- Remote resource endpoints (replace with your own hosted JSON) ---
-const PUBLIC_PROXY_LIST_SOURCES = {
-  proxyip: 'https://raw.githubusercontent.com/farzadqavidel/nexa-panel/refs/heads/main/resources/proxy-ip.json',
-  socks5: 'https://raw.githubusercontent.com/farzadqavidel/nexa-panel/refs/heads/main/resources/socks5.json'
-};
-const REMOTE_PROXY_LIST_CACHE_TTL_MS = 30 * 60 * 1000;
-let remoteProxyListCache = { key: '', data: null, fetchedAt: 0 };
+// --- Remote resource endpoint (replace with your own hosted JSON) ---
+const PUBLIC_PROXY_LIST_URL = 'https://raw.githubusercontent.com/farzadqavidel/nexa-panel/refs/heads/main/resources/proxy-ip.json';
 
 let cachedProxyResolveKey = null;
 let cachedProxyResolveList = null;
@@ -61,7 +56,7 @@ const REMOTE_MANIFEST_ANNOUNCE_URL = "https://raw.githubusercontent.com/farzadqa
 const REMOTE_UPDATE_SCRIPT_URL = "https://raw.githubusercontent.com/farzadqavidel/nexa-panel/refs/heads/main/nexa.js";
 const REMOTE_CLEAN_IPS_URL = "https://raw.githubusercontent.com/farzadqavidel/nexa-panel/refs/heads/main/resources/clean-ip.json";
 
-const PANEL_VERSION = "2.8.3";
+const PANEL_VERSION = "2.8.6";
 const CLEAN_IPS_CACHE_TTL_MS_MS = 60 * 60 * 1000;
 const MANIFEST_CACHE_TTL_MS = 5 * 60 * 1000;
 const MANIFEST_FETCH_TIMEOUT_MS = 8000;
@@ -1013,22 +1008,15 @@ const CdnProxyService = {
     const defaults = {
       mode: 'proxyip',
       proxy_ips: [],
-      proxy_ip: 'auto',
-      chain_proxy: '',
-      socks5_rotate_every: '',
-      socks5_rotate_count: 3
+      proxy_ip: 'auto'
     };
     try {
       const { results } = await env.DB.prepare(
-        "SELECT key, value FROM settings WHERE key IN ('proxy_ips','proxy_ip','cdn_proxy_mode','chain_proxy','socks5_rotate_every','socks5_rotate_count')"
+        "SELECT key, value FROM settings WHERE key IN ('proxy_ips','proxy_ip')"
       ).all();
       for (const row of (results || [])) {
         if (row.key === 'proxy_ips') defaults.proxy_ips = this.parseList(row.value);
         else if (row.key === 'proxy_ip') defaults.proxy_ip = row.value || 'auto';
-        else if (row.key === 'cdn_proxy_mode') defaults.mode = row.value || 'proxyip';
-        else if (row.key === 'chain_proxy') defaults.chain_proxy = row.value || '';
-        else if (row.key === 'socks5_rotate_every') defaults.socks5_rotate_every = row.value || '';
-        else if (row.key === 'socks5_rotate_count') defaults.socks5_rotate_count = Math.max(1, parseInt(row.value, 10) || 3);
       }
     } catch (e) {}
     if (!defaults.proxy_ip && !defaults.proxy_ips.length) defaults.proxy_ip = 'auto';
@@ -1040,40 +1028,19 @@ const CdnProxyService = {
     return defaults;
   },
   async saveSettings(env, data) {
-    const mode = ['proxyip', 'socks5', 'http', 'https', 'turn', 'sstp'].includes(String(data.mode || '').toLowerCase())
-      ? String(data.mode).toLowerCase()
-      : 'proxyip';
-    await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cdn_proxy_mode', ?)").bind(mode).run();
-    if (mode === 'proxyip') {
-      const proxyIp = String(data.proxy_ip ?? 'auto').trim() || 'auto';
-      await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('proxy_ip', ?)").bind(proxyIp).run();
-      if (this.isAutoProxy(proxyIp)) {
-        await env.DB.prepare("DELETE FROM settings WHERE key = 'proxy_ips'").run();
-      } else {
-        const list = this.parseList(proxyIp);
-        await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('proxy_ips', ?)").bind(list.join('\n')).run();
-      }
-      await env.DB.prepare("DELETE FROM settings WHERE key = 'chain_proxy'").run();
-      await env.DB.prepare("DELETE FROM settings WHERE key = 'socks5_rotate_every'").run();
-      await env.DB.prepare("DELETE FROM settings WHERE key = 'socks5_rotate_count'").run();
-    } else {
-      const chain = String(data.chain_proxy || '').trim();
-      if (chain) {
-        await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('chain_proxy', ?)").bind(chain).run();
-      } else {
-        await env.DB.prepare("DELETE FROM settings WHERE key = 'chain_proxy'").run();
-      }
-      const rotateEvery = String(data.socks5_rotate_every || '').trim();
-      if (rotateEvery) {
-        await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('socks5_rotate_every', ?)").bind(rotateEvery).run();
-      } else {
-        await env.DB.prepare("DELETE FROM settings WHERE key = 'socks5_rotate_every'").run();
-      }
-      const rotateCount = Math.max(1, Math.floor(Number(data.socks5_rotate_count) || 3));
-      await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('socks5_rotate_count', ?)").bind(String(rotateCount)).run();
-      await env.DB.prepare("DELETE FROM settings WHERE key = 'proxy_ip'").run();
+    const proxyIp = String(data.proxy_ip ?? 'auto').trim() || 'auto';
+    await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('proxy_ip', ?)").bind(proxyIp).run();
+    if (this.isAutoProxy(proxyIp)) {
       await env.DB.prepare("DELETE FROM settings WHERE key = 'proxy_ips'").run();
+    } else {
+      const list = this.parseList(proxyIp);
+      await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('proxy_ips', ?)").bind(list.join('\n')).run();
     }
+    // Purge legacy chain/SOCKS5 settings keys
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'cdn_proxy_mode'").run();
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'chain_proxy'").run();
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'socks5_rotate_every'").run();
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'socks5_rotate_count'").run();
     return this.loadSettings(env);
   },
   buildUserSettings(panelSettings, user) {
@@ -1096,7 +1063,7 @@ const CdnProxyService = {
   getActiveProxyIp(settings, request) {
     const urlOverride = request ? this.parseProxyFromUrl(new URL(request.url)) : null;
     if (urlOverride) {
-      return { proxyIp: urlOverride, mode: settings.mode || 'proxyip', enableFallback: false };
+      return { proxyIp: urlOverride, enableFallback: false };
     }
     const effective = this.getEffectiveProxyList(settings);
     const customList = effective.length
@@ -1105,7 +1072,6 @@ const CdnProxyService = {
     if (customList?.length) {
       return {
         proxyIp: customList[Math.floor(Math.random() * customList.length)],
-        mode: settings.mode || 'proxyip',
         enableFallback: false
       };
     }
@@ -1113,7 +1079,6 @@ const CdnProxyService = {
     const seed = [...colo].reduce((a, c) => a + c.charCodeAt(0), 0);
     return {
       proxyIp: FALLBACK_PROXY_HOSTS[seed % FALLBACK_PROXY_HOSTS.length],
-      mode: 'proxyip',
       enableFallback: true
     };
   },
@@ -1194,23 +1159,13 @@ const CdnProxyService = {
     }
     throw new Error(data.message || "Geo lookup failed");
   },
-  async fetchPublicProxyList(mode) {
-    const normalizedMode = String(mode || 'proxyip').toLowerCase();
-    const sourceUrl = REMOTE_PROXY_LIST_SOURCES[normalizedMode];
-    if (!sourceUrl) throw new Error('unsupported mode');
-    const now = Date.now();
-    const canCache = normalizedMode !== 'proxyip';
-    if (canCache && remoteProxyListCache.key === normalizedMode && remoteProxyListCache.data && (now - remoteProxyListCache.fetchedAt) < REMOTE_PROXY_LIST_CACHE_TTL_MS) {
-      return remoteProxyListCache.data;
-    }
-    const res = await fetchWithTimeout(sourceUrl, {
+  async fetchPublicProxyList() {
+    const res = await fetchWithTimeout(PUBLIC_PROXY_LIST_URL, {
       headers: { 'User-Agent': 'NexaProxy' },
       cf: { cacheTtl: 1800, cacheEverything: true }
-    }, normalizedMode === 'proxyip' ? 90000 : 15000);
+    }, 90000);
     if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
-    const data = await res.json();
-    if (canCache) remoteProxyListCache = { key: normalizedMode, data, fetchedAt: now };
-    return data;
+    return await res.json();
   }
 };
 
@@ -1834,12 +1789,9 @@ const Router = {
       }
     }
     if (url.pathname === '/api/proxy-public-list') {
-      const mode = ['proxyip', 'socks5', 'http', 'https'].includes(String(url.searchParams.get('mode') || '').toLowerCase())
-        ? String(url.searchParams.get('mode')).toLowerCase()
-        : 'proxyip';
       try {
-        const data = await CdnProxyService.fetchPublicProxyList(mode);
-        return new Response(JSON.stringify({ success: true, mode, data }), {
+        const data = await CdnProxyService.fetchPublicProxyList();
+        return new Response(JSON.stringify({ success: true, mode: 'proxyip', data }), {
           headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "public, max-age=1800" }
         });
       } catch (e) {
@@ -1862,12 +1814,9 @@ const Router = {
           changes,
           message: logDetails,
           settings: {
-            mode: saved.mode,
+            mode: 'proxyip',
             proxy_ip: saved.proxy_ip || 'auto',
             proxy_ips: saved.proxy_ips,
-            chain_proxy: saved.chain_proxy || '',
-            socks5_rotate_every: saved.socks5_rotate_every || '',
-            socks5_rotate_count: saved.socks5_rotate_count || 3,
             default_proxy_ips: saved.defaultProxyIPs || FALLBACK_PROXY_HOSTS
           }
         }), { headers: { "Content-Type": "application/json" } });
@@ -1875,49 +1824,39 @@ const Router = {
       if (request.method === 'GET') {
         const settings = await CdnProxyService.loadSettings(env);
         return new Response(JSON.stringify({
-          mode: settings.mode || 'proxyip',
+          mode: 'proxyip',
           proxy_ip: settings.proxy_ip || 'auto',
           proxy_ips: settings.proxy_ips,
-          chain_proxy: settings.chain_proxy || '',
-          socks5_rotate_every: settings.socks5_rotate_every || '',
-          socks5_rotate_count: settings.socks5_rotate_count || 3,
           default_proxy_ips: settings.defaultProxyIPs || FALLBACK_PROXY_HOSTS
         }), { headers: { "Content-Type": "application/json" } });
       }
     }
     if (url.pathname === '/api/proxy-check') {
-      const mode = ['proxyip', 'socks5', 'http', 'https', 'turn', 'sstp'].find(t => url.searchParams.has(t)) || 'proxyip';
-      const value = url.searchParams.get(mode) || '';
+      const value = url.searchParams.get('proxyip') || '';
       if (!String(value).trim()) {
         return new Response(JSON.stringify({ success: false, error: 'پارامتر پروکسی موجود نیست' }), {
           status: 400, headers: { "Content-Type": "application/json; charset=utf-8" }
         });
       }
-      if (mode === 'proxyip') {
-        if (CdnProxyService.isAutoProxy(value)) {
-          return new Response(JSON.stringify({
-            success: true,
-            message: 'حالت auto — از پول پیش‌فرض CDN استفاده می‌شود'
-          }), { headers: { "Content-Type": "application/json; charset=utf-8" } });
-        }
-        try {
-          const resolved = await CdnProxyService.resolveProxyAddresses(value);
-          return new Response(JSON.stringify({
-            success: resolved.length > 0,
-            ip: resolved[0]?.[0] || null,
-            count: resolved.length,
-            message: resolved.length ? `${resolved.length} آدرس یافت شد` : 'آدرسی یافت نشد'
-          }), { headers: { "Content-Type": "application/json; charset=utf-8" } });
-        } catch (e) {
-          return new Response(JSON.stringify({ success: false, error: e.message }), {
-            status: 500, headers: { "Content-Type": "application/json; charset=utf-8" }
-          });
-        }
+      if (CdnProxyService.isAutoProxy(value)) {
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'حالت auto — از پول پیش‌فرض CDN استفاده می‌شود'
+        }), { headers: { "Content-Type": "application/json; charset=utf-8" } });
       }
-      return new Response(JSON.stringify({
-        success: false,
-        error: 'بررسی ' + mode.toUpperCase() + ' هنوز در Nexa پشتیبانی نمی‌شود — فقط ذخیره می‌شود'
-      }), { status: 501, headers: { "Content-Type": "application/json; charset=utf-8" } });
+      try {
+        const resolved = await CdnProxyService.resolveProxyAddresses(value);
+        return new Response(JSON.stringify({
+          success: resolved.length > 0,
+          ip: resolved[0]?.[0] || null,
+          count: resolved.length,
+          message: resolved.length ? `${resolved.length} آدرس یافت شد` : 'آدرسی یافت نشد'
+        }), { headers: { "Content-Type": "application/json; charset=utf-8" } });
+      } catch (e) {
+        return new Response(JSON.stringify({ success: false, error: e.message }), {
+          status: 500, headers: { "Content-Type": "application/json; charset=utf-8" }
+        });
+      }
     }
     if (url.pathname === '/api/network-settings') {
       if (request.method === 'GET') {
@@ -2607,17 +2546,13 @@ function getProxySettingsChanges(oldSettings, body) {
     const newIps = normalizeProxyListForCompare(body.proxy_ips);
     if (oldIps !== newIps) changes.push('proxy_ips');
   }
-  if (body.chain_proxy !== undefined && String(body.chain_proxy || '') !== String(oldSettings.chain_proxy || '')) {
-    changes.push('chain_proxy');
-  }
   return changes;
 }
 function formatProxySettingsLogDetails(changes) {
   const labels = {
     mode: 'حالت پروکسی CDN',
     proxy_ip: 'آدرس PROXYIP',
-    proxy_ips: 'آدرس‌های Proxy IP (CDN)',
-    chain_proxy: 'پروکسی زنجیره‌ای'
+    proxy_ips: 'آدرس‌های Proxy IP (CDN)'
   };
   if (!changes.length) return 'تنظیمات پروکسی CDN ذخیره شد | بدون تغییر';
   return 'تنظیمات پروکسی CDN ذخیره شد | ' + changes.map(k => labels[k] || k).join('، ') + ' تغییر کرد';
@@ -4079,7 +4014,6 @@ async function handleVLESS(env, storedData = null, ctx = null, request = null) {
   let chunkBuffer = new Uint8Array(0);
   let proxySettings = storedData || { proxy_ips: [], defaultProxyIPs: FALLBACK_PROXY_HOSTS.slice() };
   let activeProxyIp = '';
-  let activeProxyMode = 'proxyip';
   let proxyEnableFallback = true;
   let wsChain = Promise.resolve();
   let wsStopped = false, wsFailed = false, wsFinished = false;
@@ -4152,7 +4086,6 @@ async function handleVLESS(env, storedData = null, ctx = null, request = null) {
       proxySettings = CdnProxyService.buildUserSettings(proxySettings, user);
       const proxyState = CdnProxyService.getActiveProxyIp(proxySettings, request);
       activeProxyIp = proxyState.proxyIp;
-      activeProxyMode = proxyState.mode || 'proxyip';
       proxyEnableFallback = proxyState.enableFallback;
       if (user.limit_gb && user.used_gb >= user.limit_gb) {
         serverSock.close();
@@ -4240,7 +4173,7 @@ async function handleVLESS(env, storedData = null, ctx = null, request = null) {
             } catch (err) {
               if (useFallback && allowProxyRetry && activeProxyIp) {
                 try {
-                  s = await connectViaActiveProxy(activeProxyIp, activeProxyMode, targetAddr, port, validUUID || reqUUID, proxyEnableFallback, payload);
+                  s = await connectViaActiveProxy(activeProxyIp, targetAddr, port, validUUID || reqUUID, proxyEnableFallback, payload);
                 } catch (proxyErr) {
                   throw err;
                 }
@@ -4254,7 +4187,7 @@ async function handleVLESS(env, storedData = null, ctx = null, request = null) {
               try {
                 try { remoteConnWrapper.socket?.close(); } catch (e) {}
                 remoteConnWrapper.socket = null;
-                const retrySocket = await connectViaActiveProxy(activeProxyIp, activeProxyMode, addr, port, validUUID || reqUUID, proxyEnableFallback, null);
+                const retrySocket = await connectViaActiveProxy(activeProxyIp, addr, port, validUUID || reqUUID, proxyEnableFallback, null);
                 remoteConnWrapper.socket = retrySocket;
                 retrySocket.closed.catch(() => {}).finally(() => closeSocketQuietly(serverSock));
                 connectStreams(retrySocket, serverSock, respHeader, null, (b) => { addBytes(b); });
@@ -4279,7 +4212,7 @@ async function handleVLESS(env, storedData = null, ctx = null, request = null) {
           try {
             try { remoteConnWrapper.socket?.close(); } catch (e) {}
             remoteConnWrapper.socket = null;
-            const s = await connectViaActiveProxy(activeProxyIp, activeProxyMode, addr, port, validUUID || reqUUID, proxyEnableFallback, null);
+            const s = await connectViaActiveProxy(activeProxyIp, addr, port, validUUID || reqUUID, proxyEnableFallback, null);
             remoteConnWrapper.socket = s;
             s.closed.catch(() => {}).finally(() => closeSocketQuietly(serverSock));
             connectStreams(s, serverSock, respHeader, null, (b) => { addBytes(b); });
@@ -4909,95 +4842,7 @@ async function raceOpenTcpConnections(candidates, initialData) {
     }
   }
 }
-async function connectSocks5(socks5Config, targetHost, targetPort, initialData) {
-  let auth = null;
-  let hostPort = String(socks5Config || '').trim();
-  if (hostPort.includes('@')) {
-    const atIdx = hostPort.lastIndexOf('@');
-    const credPart = hostPort.slice(0, atIdx);
-    hostPort = hostPort.slice(atIdx + 1);
-    const colonIdx = credPart.indexOf(':');
-    if (colonIdx >= 0) {
-      auth = { user: credPart.slice(0, colonIdx), pass: credPart.slice(colonIdx + 1) };
-    }
-  }
-  const parts = hostPort.split(':');
-  const sHost = parts[0];
-  const sPort = parseInt(parts[1], 10) || 1080;
-
-  const connectFn = await loadTcpConnect();
-  const socket = connectFn({ hostname: sHost, port: sPort });
-  await Promise.race([
-    socket.opened,
-    new Promise((_, reject) => setTimeout(() => reject(new Error('socks5 timeout')), 4000))
-  ]);
-  const writer = socket.writable.getWriter();
-  const reader = socket.readable.getReader();
-
-  const readExact = async (n) => {
-    let buf = new Uint8Array(0);
-    while (buf.byteLength < n) {
-      const { value, done } = await reader.read();
-      if (done) throw new Error('socks5 connection closed');
-      const merged = new Uint8Array(buf.byteLength + value.byteLength);
-      merged.set(buf, 0);
-      merged.set(value, buf.byteLength);
-      buf = merged;
-    }
-    return buf;
-  };
-
-  const methods = auth ? [0x00, 0x02] : [0x00];
-  await writer.write(new Uint8Array([0x05, methods.length, ...methods]));
-  let resp = await readExact(2);
-  if (resp[0] !== 0x05) throw new Error('socks5 handshake failed');
-  const method = resp[1];
-
-  if (method === 0x02) {
-    if (!auth) throw new Error('socks5 server requires auth (user:pass@host:port)');
-    const userBytes = new TextEncoder().encode(auth.user);
-    const passBytes = new TextEncoder().encode(auth.pass);
-    await writer.write(new Uint8Array([0x01, userBytes.length, ...userBytes, passBytes.length, ...passBytes]));
-    resp = await readExact(2);
-    if (resp[1] !== 0x00) throw new Error('socks5 auth failed');
-  } else if (method !== 0x00) {
-    throw new Error('socks5: no acceptable auth method');
-  }
-
-  const isIPv4 = /^(\d{1,3}\.){3}\d{1,3}$/.test(targetHost);
-  let atyp, addrBytes;
-  if (isIPv4) {
-    atyp = 0x01;
-    addrBytes = new Uint8Array(targetHost.split('.').map(Number));
-  } else {
-    atyp = 0x03;
-    const domainBytes = new TextEncoder().encode(targetHost);
-    addrBytes = new Uint8Array([domainBytes.length, ...domainBytes]);
-  }
-  const portBytes = new Uint8Array([(targetPort >> 8) & 0xff, targetPort & 0xff]);
-  await writer.write(new Uint8Array([0x05, 0x01, 0x00, atyp, ...addrBytes, ...portBytes]));
-
-  resp = await readExact(4);
-  if (resp[1] !== 0x00) throw new Error('socks5 connect failed, code=' + resp[1]);
-  const boundAtyp = resp[3];
-  if (boundAtyp === 0x01) await readExact(4 + 2);
-  else if (boundAtyp === 0x03) { const len = (await readExact(1))[0]; await readExact(len + 2); }
-  else if (boundAtyp === 0x04) await readExact(16 + 2);
-
-  writer.releaseLock();
-  reader.releaseLock();
-
-  if (initialData && initialData.byteLength) {
-    const w = socket.writable.getWriter();
-    await w.write(convertToUint8Array(initialData));
-    w.releaseLock();
-  }
-  return socket;
-}
-async function connectViaActiveProxy(activeProxyIp, activeProxyMode, targetAddr, targetPort, uuid, enableFallback, payload) {
-  if (activeProxyMode === 'socks5') {
-    return connectSocks5(activeProxyIp, targetAddr, targetPort, payload);
-  }
+async function connectViaActiveProxy(activeProxyIp, targetAddr, targetPort, uuid, enableFallback, payload) {
   return connectProxyCDN(activeProxyIp, targetAddr, targetPort, uuid, enableFallback, payload);
 }
 async function connectProxyCDN(proxyIP, targetHost, targetPort, uuid, enableFallback, initialData = null) {
@@ -6701,7 +6546,6 @@ const NEXA_ADMIN_SHELL_CSS = `
             padding: 0.55rem 0.75rem; border-radius: 0.75rem; font-size: 0.78rem; font-weight: 800;
             border: 1.5px solid transparent; transition: all 0.2s ease; cursor: pointer; user-select: none;
         }
-        .port-chip-check { display: none; width: 1rem; height: 1rem; flex-shrink: 0; }
         .port-chip-tls {
             border-color: rgba(5, 150, 105, 0.55); background: rgba(16, 185, 129, 0.16); color: #047857;
         }
@@ -6711,17 +6555,9 @@ const NEXA_ADMIN_SHELL_CSS = `
         .port-chip-tls:hover { background: rgba(16, 185, 129, 0.24); border-color: rgba(5, 150, 105, 0.75); }
         html.dark .port-chip-tls:hover { background: rgba(5, 150, 105, 0.38); border-color: #34d399; }
         .peer:checked ~ .port-chip-tls {
-            background: linear-gradient(135deg, rgba(5, 150, 105, 0.32), rgba(16, 185, 129, 0.22));
-            border-color: #059669; color: #064e3b;
-            box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.3), inset 0 1px 0 rgba(255,255,255,0.15);
+            background: linear-gradient(135deg, #10b981, #059669); border-color: transparent; color: #ffffff;
+            box-shadow: 0 3px 14px -3px rgba(16, 185, 129, 0.65);
         }
-        html.dark .peer:checked ~ .port-chip-tls {
-            background: linear-gradient(135deg, rgba(5, 150, 105, 0.65), rgba(4, 120, 87, 0.45));
-            border-color: #6ee7b7; color: #ecfdf5;
-            box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.45), 0 0 16px rgba(16, 185, 129, 0.35);
-        }
-        .peer:checked ~ .port-chip-tls .port-chip-check { display: block; color: #059669; }
-        html.dark .peer:checked ~ .port-chip-tls .port-chip-check { color: #d1fae5; }
         .port-chip-nontls {
             border-color: rgba(124, 58, 237, 0.55); background: rgba(139, 92, 246, 0.16); color: #6d28d9;
         }
@@ -6731,17 +6567,9 @@ const NEXA_ADMIN_SHELL_CSS = `
         .port-chip-nontls:hover { background: rgba(139, 92, 246, 0.24); border-color: rgba(124, 58, 237, 0.75); }
         html.dark .port-chip-nontls:hover { background: rgba(109, 40, 217, 0.38); border-color: #a78bfa; }
         .peer:checked ~ .port-chip-nontls {
-            background: linear-gradient(135deg, rgba(124, 58, 237, 0.32), rgba(139, 92, 246, 0.22));
-            border-color: #7c3aed; color: #4c1d95;
-            box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.3), inset 0 1px 0 rgba(255,255,255,0.15);
+            background: linear-gradient(135deg, #8b5cf6, #7c3aed); border-color: transparent; color: #ffffff;
+            box-shadow: 0 3px 14px -3px rgba(139, 92, 246, 0.65);
         }
-        html.dark .peer:checked ~ .port-chip-nontls {
-            background: linear-gradient(135deg, rgba(124, 58, 237, 0.65), rgba(109, 40, 217, 0.45));
-            border-color: #c4b5fd; color: #f5f3ff;
-            box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.45), 0 0 16px rgba(139, 92, 246, 0.3);
-        }
-        .peer:checked ~ .port-chip-nontls .port-chip-check { display: block; color: #7c3aed; }
-        html.dark .peer:checked ~ .port-chip-nontls .port-chip-check { color: #ede9fe; }
         .num-stepper { position: relative; }
         .num-stepper-input {
             -moz-appearance: textfield;
@@ -6828,6 +6656,16 @@ const NEXA_ADMIN_SHELL_CSS = `
             border: 1px solid color-mix(in srgb, var(--admin-primary) 35%, var(--admin-border));
         }
         .adm-ip-scanner-wrap { max-width: 42rem; margin: 0 auto; }
+        #section-ip-scanner .adm-ip-scanner-wrap { max-width: 68rem; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 1rem; align-items: start; }
+        #section-ip-scanner .adm-ip-scanner-panel.hero { grid-column: 1; grid-row: 1; }
+        #section-ip-scanner .adm-ip-source-panel { grid-column: 2; grid-row: 1; }
+        #section-ip-scanner .adm-ip-scanner-panel.adm-ip-scanner-results, #section-ip-scanner .adm-ip-scanner-wrap > p { grid-column: 1 / -1; }
+        #section-cdn-proxy .adm-ip-scanner-wrap { max-width: 68rem; }
+        @media (max-width: 52rem) {
+            #section-ip-scanner .adm-ip-scanner-wrap { display: block; max-width: 42rem; }
+            #section-cdn-proxy .adm-ip-scanner-wrap { max-width: 42rem; }
+            #section-cdn-proxy .adm-cdn-proxy-stack { grid-template-columns: 1fr; }
+        }
         .adm-ip-scanner-panel {
             background: var(--admin-card); border: 1px solid var(--admin-border); border-radius: 1.15rem;
             box-shadow: var(--admin-shadow); padding: 1.35rem; margin-bottom: 1rem;
@@ -6851,9 +6689,10 @@ const NEXA_ADMIN_SHELL_CSS = `
             background: var(--admin-input-bg); border: 1px solid var(--admin-border); color: var(--admin-text); transition: 0.15s ease;
         }
         .adm-ip-scanner-port-chip:has(input:checked) {
-            background: var(--admin-primary-soft); border-color: color-mix(in srgb, var(--admin-primary) 40%, var(--admin-border)); color: var(--admin-primary);
+            background: linear-gradient(135deg, var(--admin-primary), var(--admin-accent)); border-color: transparent; color: #fff;
+            box-shadow: 0 3px 12px -3px var(--admin-glow);
         }
-        .adm-ip-scanner-port-chip input { accent-color: var(--admin-primary); cursor: pointer; }
+        .adm-ip-scanner-port-chip input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
         .adm-ip-scanner-run {
             display: flex; align-items: center; justify-content: center; gap: 0.45rem; width: 100%;
             padding: 0.8rem 1rem; border-radius: 0.8rem; font-size: 0.88rem; font-weight: 900; border: none; cursor: pointer;
@@ -6922,7 +6761,8 @@ const NEXA_ADMIN_SHELL_CSS = `
             color: var(--admin-text); padding: 0.6rem 0.75rem; font-size: 0.82rem; font-weight: 700;
         }
         .adm-ip-server-field select:focus { outline: none; border-color: var(--admin-primary); }
-        .adm-cdn-proxy-stack { display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem; }
+        .adm-cdn-proxy-stack { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; margin-top: 1rem; }
+        .adm-cdn-proxy-stack .adm-ip-scanner-panel { margin-bottom: 0; }
         .adm-cdn-cf-banner {
             display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75rem;
             padding: 0.85rem 1rem; border-radius: 0.85rem;
@@ -6942,7 +6782,7 @@ const NEXA_ADMIN_SHELL_CSS = `
         .adm-cdn-panel-title { display: inline-flex; align-items: center; gap: 0.45rem; font-size: 0.9rem; font-weight: 900; color: var(--admin-text); }
         .adm-cdn-panel-title svg { width: 1.1rem; height: 1.1rem; color: var(--admin-primary); flex-shrink: 0; }
         .adm-cdn-fields { display: grid; grid-template-columns: 1fr; gap: 0.75rem; }
-        @media (min-width: 40rem) { .adm-cdn-fields.two-col { grid-template-columns: 1fr 1fr; } }
+        .adm-cdn-fields.two-col { grid-template-columns: 1fr 1fr; }
         .adm-cdn-field label { display: block; font-size: 0.68rem; font-weight: 800; color: var(--admin-muted); margin-bottom: 0.35rem; }
         .adm-cdn-field-hint { font-size: 0.68rem; font-weight: 600; color: var(--admin-muted); line-height: 1.65; margin-top: 0.35rem; }
         .adm-cdn-sec { margin-top: 0.75rem; }
@@ -6950,9 +6790,6 @@ const NEXA_ADMIN_SHELL_CSS = `
         .adm-cdn-msg.ok { color: #059669; }
         .adm-cdn-msg.bad { color: #dc2626; }
         .adm-cdn-msg.info { color: var(--admin-muted); }
-        .adm-cdn-rotate-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: flex-end; margin-top: 0.65rem; }
-        .adm-cdn-rotate-row .adm-cdn-field { flex: 1; min-width: 7rem; margin: 0; }
-        .adm-cdn-rotate-row .adm-cdn-field.narrow { flex: 0 0 7rem; max-width: 7rem; }
         .adm-um-ip-btns { display: inline-flex; flex-wrap: wrap; gap: 0.35rem; }
         .adm-dash-map-zoom-btn { width: 100%; padding: 0.55rem 0.75rem; border: 0; border-top: 1px solid var(--admin-border); background: var(--admin-card); color: var(--admin-primary); font-size: 0.75rem; font-weight: 800; cursor: pointer; transition: background 0.15s ease; }
         .adm-dash-map-zoom-btn:hover { background: var(--admin-primary-soft); }
@@ -7128,7 +6965,7 @@ const NEXA_ADMIN_SHELL_CSS = `
         html.dark .adm-app select.admin-input option,
         html.dark .adm-app .adm-ip-server-field select option,
         html.dark .adm-app .adm-cdn-field select option { color: #e8ecf5; background: #151d1c; }
-        #cdn-proxy-country, #cdn-proxy-pick, #cdn-proxy-mode { position: relative; z-index: 2; }
+        #cdn-proxy-country, #cdn-proxy-pick { position: relative; z-index: 2; }
 `;
         const NEXA_USERS_REDESIGN_CSS = `
     /* ── Users section — cyber glass theme ── */
@@ -9162,7 +8999,7 @@ Commercial support is available at
             </div>
             <div class="adm-ip-scanner-output" id="ip-scan-output"></div>
         </div>
-        <div class="adm-ip-scanner-panel">
+        <div class="adm-ip-scanner-panel adm-ip-source-panel">
             <div class="adm-ip-scanner-results-head">
                 <span class="adm-ip-scanner-section-title" data-i18n="ip_scan_source_title">منبع آی‌پی تمیز</span>
                 <span class="adm-ip-scanner-section-count" id="ip-pool-count"></span>
@@ -9205,14 +9042,6 @@ Commercial support is available at
                     </span>
                 </div>
                 <p class="adm-ip-scanner-sub" style="margin-bottom:0.75rem" data-i18n="cdn_access_desc">از بخش یافتن پروکسی میتوانید پروکسی ایپی مد نظر خود را دریافت کنید.</p>
-                <div class="adm-cdn-fields">
-                    <div class="adm-cdn-field">
-                        <label for="cdn-proxy-mode" data-i18n="cdn_mode_label">حالت</label>
-                        <select id="cdn-proxy-mode" class="admin-input w-full px-3 py-2.5 text-sm" onchange="cdnProxyApplyMode()">
-                            <option value="proxyip">PROXYIP</option>
-                        </select>
-                    </div>
-                </div>
                 <div class="adm-cdn-sec" id="cdn-sec-proxyip">
                     <div class="adm-cdn-field">
                         <label for="cdn-proxyip-input" data-i18n="cdn_proxyip_label">آدرس PROXYIP (هر خط یک پروکسی)</label>
@@ -10495,7 +10324,7 @@ Commercial support is available at
                 if (e.key === 'Escape') toggleAdminSidebar(false);
             });
         }
-        const ADMIN_I18N = { fa: { nav_main:'منوی اصلی', nav_dashboard:'داشبورد', nav_users:'مدیریت کاربران', nav_guide:'آموزش اتصال', nav_node_server:'سرور نود', nav_ip_scanner:'اسکنر IP تمیز', nav_cdn_proxy:'پروکسی CDN', nav_logs:'لاگ فعالیت', nav_wireguard:'سرویس WireGuard', nav_warp:'سرویس WARP', nav_settings:'تنظیمات پنل', nav_panel_control:'کنترل پنل', nav_update_panel:'به‌روزرسانی پنل', nav_about:'درباره ما', nav_backup:'بکاپ پنل', nav_tg_channel:'کانال تلگرام Nexa', nav_tg_bot:'بات پشتیبانی Nexa', nav_collapse:'جمع کردن منو', nav_expand:'باز کردن', nav_logout:'خروج', panel_version:'نسخه ${PANEL_VERSION}', panel_subtitle:'پنل مدیریت', aria_menu:'منو', aria_collapse:'جمع کردن منو', aria_close:'بستن', theme_toggle:'تغییر تم', dash_sub_title:'لینک اشتراک اصلی', dash_manage_btn:'برای مدیریت این سرویس کلیک کنید', dash_copy_sub:'کپی اشتراک', node_server_title:'نود اصلی', node_server_desc:'نود شما روی همه‌ی پورت‌های TLS کلودفلر، با استفاده‌ی مستقیم از دامنه‌ی ورکر، جدا از اشتراک، هر پورت را کپی کنید.', node_server_empty:'کانفیگ نودی در دسترس نیست', node_server_copy:'کپی', node_server_qr:'QR', dash_worker_usage:'مصرف ریکوئست Worker', dash_reset_label:'ریست ساعت:', dash_reset_meta:'ریست ریکوئست‌ها در ساعت 3:30 به وقت تهران', dash_top_req_title:'بیشترین مصرف ریکوئست کل', dash_top_req_empty:'هنوز مصرفی ثبت نشده', dash_ip_title:'مشخصات IP شما', dash_via_server:'از طریق این سرور', dash_direct_ip:'IP مستقیم (بدون پروکسی)', dash_city:'شهر', dash_region:'منطقه', dash_country:'کشور', dash_fetching_loc:'در حال دریافت موقعیت...', dash_click_refresh:'برای دریافت، بروزرسانی را بزنید', dash_loading_map:'در حال بارگذاری نقشه...', dash_zoom_map:'بزرگ‌نمایی', dash_map_via_server:'نقشه: از طریق سرور', dash_map_direct:'نقشه: IP مستقیم', dash_updating:'در حال بروزرسانی...', ip_scanner_desc:'سریع‌ترین آی‌پی‌های تمیز کلودفلر را برای شبکه‌تان پیدا کنید', ip_scan_total:'تعداد ایپی مورد نظر برای تست', ip_scan_keep:'انتخاب بهترین ایپی ', ip_scan_ports_label:'پورت‌های اسکن', ip_scan_ports_required:'حداقل یک پورت انتخاب کنید', ip_scan_start:'شروع اسکن', ip_scan_results:'نتایج آی‌پی تمیز', cdn_cf_banner_text:'برای بروزرسانی خودکار و نمایش «مصرف ورکر»، یک‌بار توکن Cloudflare را وصل کن، کمتر از یک دقیقه.', cdn_cf_connect:'اتصال توکن', cdn_access_title:'دسترسی CDN کلودفلر', cdn_access_desc:'از بخش یافتن پروکسی میتوانید پروکسی ایپی مد نظر خود را دریافت کنید.', cdn_mode_label:'حالت', cdn_proxyip_label:'آدرس PROXYIP', cdn_proxyip_hint:'هر خط = یک لوکیشن. اگه می‌خوای پرچم کشورش هم توی اسم کانفیگ بیاد، انتهای اون خط بنویس <code>#کدکشور</code> (مثال: <code>1.2.3.4#DE</code> یا <code>5.6.7.8:2053#US</code>)', cdn_chain_label:'آدرس پروکسی', cdn_chain_hint:'هر پروکسی در یک خط. یکی = IP ثابت؛ دو تا سه = چرخش و جایگزینی خودکار.', cdn_rotate_label:'چرخش خودکار', cdn_rotate_off:'خاموش — همه', cdn_rotate_daily:'روزانه', cdn_rotate_weekly:'هفتگی', cdn_rotate_count:'تعداد فعال', cdn_rotate_hint:'با چند پروکسی، هر روز/هفته زیرمجموعه‌ای متفاوت ارائه می‌شود.', cdn_verify:'بررسی', cdn_save:'ذخیره', cdn_finder_title:'یافتن پروکسی', cdn_finder_load:'دریافت فهرست', cdn_finder_desc:'شما میتوانید با لود فهرست ها از پروکسی 68 کشور استفاده کنید. ', cdn_country_label:'کشور', cdn_pick_label:'پروکسی', cdn_use_selected:'استفاده از انتخاب', cdn_proxy_saved:'تنظیمات پروکسی CDN ذخیره شد', cdn_proxy_fetching:'در حال دریافت فهرست...', cdn_proxy_list_ok:'فهرست دریافت شد', cdn_proxy_list_stats:'{proxies} پروکسی — {countries} کشور', cdn_proxy_use_ok:'پر شد — اکنون ذخیره کنید', cdn_proxy_verify_proxyip:'PROXYIP نیاز به تست جدا ندارد — هنگام اتصال خودکار بررسی می‌شود. فقط ذخیره کنید.', cdn_proxy_verify_ok:'پروکسی در دسترس است', cdn_proxy_verify_fail:'پاسخی دریافت نشد', cdn_proxy_enter_first:'ابتدا آدرس پروکسی را وارد کنید', ip_scan_copy:'کپی نتایج', ip_scan_save_pool:'ذخیره در مخزن پنل', ip_scan_foot:'اسکن کاملاً در مرورگر شما انجام می‌شود', ip_scan_prep:'در حال آماده‌سازی…', ip_scan_testing:'در حال تست…', ip_scan_alive:' سالم', ip_scan_none:'هیچ IP سالمی پیدا نشد', ip_scan_found:' IP تمیز پیدا شد', ip_scan_saved_pool:'در مخزن پنل ذخیره شد', ip_scan_pool_empty:'مخزن اسکنر پنل خالی است', ip_scan_pool_applied:'آی‌پی‌های مخزن اسکنر اعمال شد', ip_scan_copied:'نتایج کپی شد', ip_scan_pool_count:'مخزن پنل: {count} آی‌پی', ip_scan_pool_title:'مخزن پنل', ip_scan_pool_desc:'مدیریت آی‌پی‌های ذخیره‌شده در مخزن پنل', ip_scan_source_title:'منبع آی‌پی تمیز', ip_scan_source_smart:'هوشمند', ip_scan_source_pool:'مخزن ایپی تمیز', ip_scan_smart_desc:'در حالت هوشمند، آی‌پی‌های تمیز از لینک زیر دریافت می‌شوند:', ip_scan_auto_saved:'نتایج اسکن در مخزن ذخیره شد', ip_scan_pool_textarea_ph:'هر خط یک IP — مثال: 1.2.3.4 یا 1.2.3.4:443', ip_scan_pool_save:'ذخیره مخزن', ip_scan_pool_clear:'پاک کردن همه', ip_scan_pool_saved:'مخزن ذخیره شد', ip_scan_pool_cleared:'مخزن پاک شد', ip_scan_pool_remove:'حذف', ip_scan_pool_max:'حداکثر ۵۰ آی‌پی در مخزن مجاز است', ip_scan_pool_clear_confirm:'همه آی‌پی‌های مخزن پاک شوند؟', ip_scan_server_title:'ایپی تمیز سرور', ip_scan_server_desc:'لیست آی‌پی‌های دریافتی از /clean-ip', ip_scan_server_operator:'اپراتور', ip_scan_server_all:'همه', ip_scan_server_refresh:'بروزرسانی', ip_scan_server_copy:'کپی', ip_scan_server_loading:'در حال بارگذاری…', ip_scan_server_empty:'لیست خالی است', dash_load_error:'خطا در بارگذاری داشبورد', dash_loc_not_found:'موقعیت دقیق یافت نشد', dash_ip_not_found:'IP یافت نشد', dash_map_unavailable:'نقشه در دسترس نیست', dash_map_no_coords:'موقعیت تقریبی روی نقشه در دسترس نیست', dash_direct_fetch_fail:'دریافت IP مستقیم ناموفق بود', dash_direct_ip_not_found:'IP مستقیم یافت نشد', dash_direct_error:'خطا در دریافت IP مستقیم', dash_direct_not_received:'IP مستقیم دریافت نشد', dash_main_user_not_found:'کاربر اصلی یافت نشد', stat_total:'کل کاربران', stat_online:'آنلاین', stat_inactive:'غیرفعال', stat_expired:'منقضی', users_loading:'در حال بارگذاری کاربران...', search_placeholder:'جستجوی با نام سرویس ...', filter_all:'همه', filter_active:'فعال', filter_inactive:'غیرفعال', filter_online:'آنلاین', filter_offline:'آفلاین', filter_expired:'منقضی / تمام شده', sort_newest:'جدیدترین', sort_name:'نام کاربری (الفبا)', sort_usage_desc:'بیشترین مصرف', sort_usage_asc:'کمترین مصرف', sort_expiry_asc:'کمترین زمان باقی‌مانده', bulk_selected:'{n} سرویس انتخاب شده', bulk_deselect:'لغو انتخاب', bulk_edit:'ویرایش گروهی', bulk_activate:'فعال', bulk_deactivate:'قطع', bulk_reset_vol:'ریست حجم', bulk_reset_time:'ریست زمان', bulk_reset_req:'ریست ریکوئست کل', bulk_save:'ذخیره', bulk_delete:'حذف', users_list_title:'لیست کاربران', users_list_desc:'مدیریت سرویس ها', select_all:'انتخاب همه', new_user:'کاربر جدید', add_user:'افزودن کاربر', th_user_ops:'نام کاربر و عملیات', th_sub_link:'لینک ساب', th_protocol:'پروتکل', th_port:'پورت', th_volume:'وضعیت حجم', th_expiry:'وضعیت اعتبار', th_requests:'مصرف ریکوئست', th_created:'تاریخ ساخت', empty_no_users:'کاربری وجود ندارد', empty_create_hint:'برای ساخت اولین کاربر روی «کاربر جدید» کلیک کنید', empty_no_results:'نتیجه‌ای یافت نشد', empty_no_match:'کاربری با مشخصات جستجو شده پیدا نشد', badge_main_service:'سرویس اصلی', badge_online:'● آنلاین', badge_offline:'آفلاین', badge_expired:'منقضی', badge_vol_done:'حجم تمام', badge_time_done:'زمان تمام', badge_disabled:'قطع', badge_active:'فعال', badge_temp:'موقت', badge_req_done:'ریکوئست تمام', btn_sub_link:'لینک ساب', btn_status:'وضعیت', btn_logs:'لاگ', btn_edit:'ویرایش', btn_delete:'حذف', btn_qr_sub:'qrcode اشتراک', btn_qr_sub_link:'qrcode لینک ساب', usage_label:'مصرف:', req_total_label:'مصرف کل', req_daily_label:'مصرف روزانه', total_label:'کل:', remaining_label:'باقی‌مانده:', unlimited:'نامحدود', days_unit:'روز', activate_user:'فعال کردن کاربر', deactivate_user:'قطع کردن کاربر', reset_vol_title:'ریست حجم سرویس', reset_time_title:'ریست زمان سرویس', save_enabled:'ذخیره شده — حذف خودکار غیرفعال', save_disabled:'ذخیره (جلوگیری از حذف خودکار پس از انقضا)', guide_tab_android:'اندروید', guide_tab_ios:'آیفون', guide_tab_desktop:'ویندوز / مک', usage_warn_title:'هشدار محدودیت درخواست روزانه', usage_warn_body:'درخواست‌های امروز کلودفلر شما از مرز ۹۰,۰۰۰ عبور کرده است. در صورت عبور از محدودیت رایگان ۱۰۰,۰۰۰ درخواست، دسترسی به پنل و اتصالات تا ساعت ۳:۳۰ بامداد (به وقت ایران) قطع خواهد شد.', usage_warn_ok:'متوجه شدم', modal_create_title:'ایجاد کاربر جدید', modal_create_sub:'تنظیمات سرویس VPN را وارد کنید', modal_edit_title:'ویرایش کاربر', modal_edit_sub:'ویرایش تنظیمات «{name}»', modal_sys_title:'مدیریت سرویس اصلی', modal_sys_sub:'فقط پورت، آیپی تمیز و Proxy IP', modal_sys_notice:'سرویس اصلی همیشه <strong>نامحدود</strong> است. فقط پورت، آیپی تمیز و Proxy IP قابل تغییر است.', um_basic_info:'اطلاعات پایه', um_username:'نام سرویس', um_volume:'حجم (GB)', um_expiry:'اعتبار (روز)', um_max_conn:'ریکوئست کل', um_max_req_daily:'ریکوئست روزانه', um_ports:'پورت‌های اتصال', um_ports_tls:'پورت‌های امن (TLS)', um_ports_nontls:'پورت‌های معمولی (Non-TLS)', um_advanced:'تنظیمات پیشرفته', um_clean_ip:'آیپی تمیز ', um_ip_pool:'دریافت ایپی تمیز از سرور', um_scanner_pool:'استفاده از مخزن اسکنر پنل', um_fingerprint:'Fingerprint ', um_proxy_ip:'Proxy IP اختصاصی (اختیاری)', um_proxy_hint:'اگر خالی باشد، هنگام اتصال از پول CDN پیش‌فرض پنل استفاده می‌شود.', um_proxy_placeholder:'خالی = استفاده از پروکسی پنل', um_name_placeholder:'مثال: ali', um_clean_ip_placeholder:'میتوانید ایپی تمیز خود را از مخزن پنل یا از سرور ما', fp_random:'Random (اتفاقی) — پیش‌فرض', fp_randomized:'Randomized (پویا)', cancel:'انصراف', create_user:'ایجاد کاربر', save_changes:'ذخیره تغییرات', save_settings:'ذخیره تنظیمات', creating:'در حال ایجاد...', saving:'در حال ذخیره تغییرات...', applying:'در حال اعمال...', bulk_edit_title:'ویرایش گروهی', bulk_apply:'اعمال روی انتخاب‌شده‌ها', bulk_clean_ip:'آیپی تمیز', bulk_ip_pool:'مخزن آیپی', ip_pool_title:'دریافت ایپی تمیز و دامنه پشت کلادفلر', ip_operator:'اوپراتور', ip_count:'تعداد', ip_fetch:'دریافت', qr_scan:'اسکن کد QR', map_title:'نقشه موقعیت تقریبی', close:'بستن', confirm_title:'تأیید عملیات', confirm_ok:'تأیید', confirm_cancel:'انصراف', confirm_yes:'بله، انجام شود', confirm_yes_delete:'بله، حذف شود', confirm_yes_reset:'بله، ریست شود', confirm_yes_restore:'بله، بازیابی شود', confirm_yes_logout:'بله، خروج', toast_select_service:'ابتدا حداقل یک سرویس را انتخاب کنید', toast_no_selected:'هیچ سرویسی انتخاب نشده است', toast_select_field:'حداقل یک فیلد را برای اعمال انتخاب کنید', toast_select_port:'حداقل یک پورت انتخاب کنید', toast_bulk_done:'عملیات گروهی روی {n} سرویس انجام شد', toast_bulk_edit_done:'ویرایش گروهی روی {n} سرویس انجام شد', toast_bulk_fail:'خطا در عملیات گروهی', toast_bulk_edit_fail:'خطا در ویرایش گروهی', toast_op_fail:'عملیات ناموفق بود', toast_sys_always_saved:'سرویس اصلی همیشه ذخیره است', toast_sys_status_locked:'وضعیت سرویس اصلی قابل تغییر نیست', toast_sys_reset_locked:'ریست حجم یا زمان سرویس اصلی مجاز نیست', toast_sys_no_delete:'این کاربر سیستمی است و قابل حذف نیست', toast_sub_copied:'لینک ساب با موفقیت کپی شد', toast_sub_copy_fail:'خطا در کپی کردن لینک ساب', toast_node_copied:'کانفیگ نود کپی شد', toast_node_copy_fail:'خطا در کپی کانفیگ نود', toast_user_deleted:'کاربر با موفقیت حذف شد', toast_user_not_found:'کاربر یافت نشد!', toast_conn_error:'خطا در برقراری ارتباط با سرور', toast_tg_saved:'تنظیمات تلگرام ذخیره شد', toast_save_fail:'خطا در ذخیره', toast_logs_cleared:'لاگ‌ها حذف شدند', toast_logs_load_fail:'خطا در بارگذاری لاگ‌ها', toast_backup_restored:'بکاپ با موفقیت بازیابی شد ({n} کاربر)', toast_backup_fail:'خطا در بازیابی', toast_backup_download_fail:'خطا در دریافت بکاپ', toast_reset_vol_ok:'ریست {type} با موفقیت انجام شد', toast_reset_vol:'حجم', toast_reset_time:'زمان', bulk_confirm_title:'عملیات گروهی', bulk_confirm_msg:'آیا از «{action}» مطمئن هستید؟', bulk_delete_n:'حذف {n} سرویس', bulk_activate_n:'فعال‌سازی {n} سرویس', bulk_deactivate_n:'قطع {n} سرویس', bulk_reset_vol_n:'ریست حجم {n} سرویس', bulk_reset_time_n:'ریست زمان {n} سرویس', bulk_reset_req_n:'ریست ریکوئست کل {n} سرویس', bulk_enable_save_n:'فعال‌سازی ذخیره برای {n} سرویس', reset_confirm_title:'ریست سرویس', reset_confirm_msg:'آیا از ریست {type} سرویس کاربر «{name}» مطمئن هستید؟', delete_user_title:'حذف کاربر', delete_user_msg:'آیا از حذف کاربر «{name}» مطمئن هستید؟', restore_confirm_title:'بازیابی بکاپ', restore_confirm_msg:'با بازیابی بکاپ، تمام کاربران و تنظیمات فعلی جایگزین می‌شوند. ادامه می‌دهید؟', clear_logs_confirm:'آیا از حذف همه لاگ‌های پنل مطمئن هستید؟', clear_logs_title:'حذف لاگ‌ها', logout_confirm:'آیا می‌خواهید از پنل خارج شوید؟', logout_title:'خروج از پنل', alert_select_port:'⚠️ لطفا حداقل یک پورت را برای اتصال انتخاب کنید!', alert_error:'خطا: {msg}', users_load_error:'خطا در دریافت اطلاعات از سرور', users_parse_error:'خطا در پردازش اطلاعات کاربران', update_title:'به‌روزرسانی پنل', update_msg:'در حال دریافت و نصب نسخه جدید...', update_available_title:'به‌روزرسانی موجود است', update_available_msg:'نسخه جدید {remote} در دسترس است.\\nنسخه فعلی پنل شما: {current}', update_later:'بعداً', update_complete:'اپدیت با موفقیت انجام شد', update_complete_reload:'در حال بارگذاری مجدد پنل...', update_failed:'خطا در به‌روزرسانی', update_failed_msg:'به‌روزرسانی پنل انجام نشد.', update_cf_token_redirect:'توکن CF_TOKEN معتبر نیست. در حال انتقال به صفحه راه‌اندازی...', panel_update_title:'به‌روزرسانی پنل', panel_update_desc:'نسخه جدید از سرور دریافت و پنل شما اپدیت و ویژگی های جدید اضافه خواهد شد.', panel_update_current:'نسخه فعلی', panel_update_remote:'نسخه سرور', panel_update_btn:'به‌روزرسانی پنل', panel_update_confirm:'نسخه جدید از سرور مدیریت دریافت و روی ورکر شما نصب می‌شود. ادامه می‌دهید؟', panel_update_available:'نسخه {remote} موجود است — نسخه فعلی شما {current}', panel_update_latest:'پنل شما به‌روز است.', increase:'افزایش', decrease:'کاهش', cf_token_required:'توکن API کلودفلر را وارد کنید', reset_panel_fail:'خطا در بازنشانی پنل', reset_panel_yes:'بله، بازنشانی شود', about_kicker:'تیم توسعه‌ی زیرساخت آزاد', about_hero_title:'عبور از فیلترینگ، با پنل خودت', about_hero_desc:'NEXA گروهی از توسعه‌دهنده‌هاست که ابزارهای متن‌باز برای دسترسی آزاد به اینترنت می‌سازد — روی زیرساخت Cloudflare Workers، بدون واسطه، بدون فروش کانفیگ، و کاملاً در اختیار خودت.', about_kicker2:'درباره‌ی نکسا', about_title:'پنل شخصی، بدون واسطه و هزینه', about_desc:'NEXA به جای فروش سرویس، ابزار عمومی در اختیار می‌گذارد. هرکسی می‌تواند در چند دقیقه، روی اکانت Cloudflare خودش، پنل مدیریت اتصال شخصی‌اش را بالا بیاورد؛ سریع، پایدار و بدون نیاز به اعتماد به یک سرور واسط.', about_f1_title:'متن‌باز و شفاف', about_f1_desc:'کد پنل کاملاً قابل مشاهده است؛ هرچه در پنل اجرا می‌شود را می‌توانی پیش از استفاده بررسی کنی.', about_f2_title:'زیرساخت خودت', about_f2_desc:'پنل روی حساب Cloudflare شخصی تو اجرا می‌شود؛ داده‌ها و اتصال‌ها از کانال هیچ سرور واسطی عبور نمی‌کند.', about_f3_title:'راه‌اندازی سریع', about_f3_desc:'در کمتر از پنج دقیقه، بدون دانش عمیق برنامه‌نویسی، پنل شخصی‌ات آماده و در دسترس است.', about_f4_title:'بدون قصد فروش', about_f4_desc:'هدف NEXA آموزش و در دسترس گذاشتن ابزار است، نه فروش کانفیگ یا اشتراک اینترنت.', about_social:'ما را در شبکه‌های اجتماعی دنبال کنید', about_social_desc:'آموزش‌ها، به‌روزرسانی‌ها و اخبار تیم NEXA را از یوتیوب و تلگرام دنبال کن.', tg_notify_title:'اعلان‌های تلگرام', tg_enable:'فعال‌سازی اعلان تلگرام', tg_token:'توکن ربات', tg_chat_id:'شناسه چت / کاربر', tg_chat_hint:'برای دریافت شناسه چت خود به بات ما مراجعه کنید و ایدی عددی خود را دریافت کنید . ادرس بات : <a href="https://t.me/nexateam_bot" target="_blank" rel="noopener noreferrer">https://t.me/nexateam_bot</a>', tg_status_on:'روشن', tg_status_off:'خاموش', save:'ذخیره', save_success:'تنظیمات با موفقیت ذخیره شد', logs_desc:'تمام رویدادهای مهم پنل', refresh:'بروزرسانی', clear_logs:'حذف همه', loading:'در حال بارگذاری...', logs_empty:'هنوز رویدادی ثبت نشده است.', col_time:'زمان', col_action:'عملیات', col_details:'جزئیات', backup_desc:'کاربران، تمام تنظیمات پنل و لاگ فعالیت را دانلود یا بازیابی کنید.', backup_download:'دریافت بکاپ', backup_upload:'بارگذاری بکاپ', backup_includes:'تمام بخش های پنل شامل میشود.', backup_auto_title:'بکاپ خودکار روزانه', backup_auto_desc:'هر روز ساعت ۰۰:۰۰ (به وقت تهران) بکاپ کامل به تلگرام ارسال می‌شود — نیاز به تنظیم توکن و شناسه چت در بخش لاگ فعالیت دارد.', backup_tg_hint:'برای ارسال بکاپ، ابتدا توکن ربات و شناسه چت را در بخش «لاگ فعالیت» تنظیم کنید.', backup_cron_hint:'برای اجرای دقیق ساعت ۰۰:۰۰، در Cloudflare Workers یک Cron Trigger با مقدار 30 20 * * * اضافه کنید. (اگر پنل را با سایت یا ربات ساختید نیاز به تنظیم نیست .)', backup_tg_send:'ارسال بکاپ به تلگرام (تست)', backup_last_run:'آخرین بکاپ خودکار', backup_last_never:'هنوز اجرا نشده', backup_tg_sent:'بکاپ با موفقیت به تلگرام ارسال شد', backup_tg_fail:'خطا در ارسال بکاپ به تلگرام', backup_auto_saved:'تنظیمات بکاپ خودکار ذخیره شد', reset_panel_title:'بازنشانی تمام تنظیمات', reset_panel_desc:'تمام کاربران، تنظیمات پروکسی، اعلان تلگرام و لاگ‌ها حذف می‌شوند. پنل مانند اولین ورود خواهد بود. رمز عبور مدیریت حفظ می‌شود.', reset_panel_btn:'بازنشانی تمام تنظیمات', reset_panel_confirm:'با بازنشانی، تمام کاربران (به‌جز سرویس اصلی)، تنظیمات و لاگ‌ها حذف می‌شوند. این عمل قابل بازگشت نیست. ادامه می‌دهید؟', reset_panel_success:'پنل با موفقیت بازنشانی شد', pwd_info_title:'تغییر رمز عبور مدیریت', pwd_storage_note:'رمز عبور در متغیر ADMIN (نوع Text) در Cloudflare Workers ذخیره می‌شود.', pwd_current_label:'رمز عبور فعلی', pwd_new_label:'رمز عبور جدید', pwd_confirm_label:'تکرار رمز جدید', pwd_change_btn:'تغییر رمز عبور', pwd_change_success:'رمز عبور با موفقیت تغییر کرد', cf_creds_title:'تنظیمات Cloudflare API', cf_creds_note:'فقط CF_TOKEN را وارد کنید — Account ID خودکار از توکن دریافت و در ورکر ذخیره می‌شود.', cf_token_label:'CF_TOKEN', cf_ac_id_label:'Account ID', cf_ac_id_auto_hint:'نیازی به وارد کردن دستی نیست', cf_creds_save:'ذخیره توکن', cf_creds_success:'توکن با موفقیت ذخیره شد', cf_token_hint_set:'توکن فعلی تنظیم شده — برای تغییر، توکن جدید وارد کنید', panel_control_restart_title:'ری‌استارت پنل', panel_control_restart_desc:'شمارشگر آپتایم و کش‌های موقت داخلی ورکر پاک‌سازی می‌شود. کاربران و تنظیمات شما دست‌نخورده باقی می‌مانند.', panel_control_restart_btn:'ری‌استارت پنل', panel_control_disable_label:'خاموش کردن پنل مدیریت', panel_control_disable_desc:'با فعال شدن این گزینه، صفحه ورود و پنل مدیریت برای همه غیرقابل دسترسی می‌شود و صفحه وضعیت Nexa نمایش داده می‌شود. سرویس‌های VPN فعال باقی می‌مانند. برای بازگشت، آدرس را با <code dir="ltr">?unlock=1</code> باز کنید (مثال: <code dir="ltr">/admin?unlock=1</code>).', kill_all_services_label:'قطع تمامی سرویس‌ها', kill_all_services_label:'قطع تمامی سرویس‌ها', kill_all_services_desc:'با روشن شدن این گزینه تمامی سرویس‌ها متوقف و قطع خواهند شد در صورتی که مورد سو استفاده قرار گرفتید این گزینه را روشن کنید و با عوض کردن ادرس ها پنل خود را امن کنید .', kill_all_services_on:'تمامی سرویس‌ها قطع شدند', kill_all_services_off:'سرویس‌ها مجدداً فعال شدند', proxy_save_base:'تنظیمات Proxy IP ذخیره شد', proxy_change_labels:{proxy_ips:'آدرس‌های Proxy IP (CDN)'}, proxy_ips_label:'آدرس‌های Proxy IP (CDN)', proxy_ips_hint:'خالی = استفاده از پول CDN پیش‌فرض (در صورت خالی گذاشتن از ایپی پروکسی پنل استفاده میشود. و ...)', blocked_domains_title:'مسدودسازی دامنه', blocked_domains_desc:'دامنه‌هایی که وارد کنید از طریق پروکسی باز نمی‌شوند. هر دامنه در یک خط.', blocked_domains_enable:'فعال‌سازی مسدودسازی', blocked_domains_label:'لیست دامنه‌های مسدود', blocked_domains_hint:'مثال: example.com — زیردامنه‌ها هم مسدود می‌شوند', blocked_domains_save:'ذخیره مسدودسازی', blocked_domains_saved:'مسدودسازی دامنه ذخیره شد', wc_protocol_title:'تنظیمات ادرس صفحات', wc_protocol_desc:'تنظیمات انتقال، مسیر اتصال و آدرس صفحات', wc_protocol_label:'پروتکل', wc_transport_label:'حمل‌ونقل', wc_grpc_mode_label:'حالت gRPC', wc_fingerprint_label:'TLS Fingerprint', wc_tls_fragment_label:'TLS Fragment', wc_transport_path_label:'مسیر انتقال', wc_transport_path_hint:'وقتی در بخش «پروکسی CDN» یک Proxy IP ست کنید، این مقدار خودکار روی fixip_<proxy-ip> تنظیم می‌شود.', wc_var_username:'نام کاربری سرویس', wc_var_used:'حجم مصرف‌شده تا این لحظه', wc_var_total:'حجم کل سرویس (∞ یعنی نامحدود)', wc_var_dayremind:'تعداد روزهای باقی‌مانده تا انقضا', wc_var_expiry:'کل مدت اعتبار به روز (∞ یعنی نامحدود)', wc_var_port:'پورتی که این کانفیگ خاص روی آن ساخته شده', wc_var_proxyip:'آدرس Proxy IP فعلیِ تنظیم‌شده در بخش «پروکسی CDN»', wc_var_flag:'پرچم کشوری که برای این پروکسی مشخص کردی (فرمت #کدکشور جلوی آی‌پی)', adult_block_title:'مسدودسازی محتوای بزرگسال', adult_block_label:'فیلتر کردن محتوای بزرگ سال (+18)', adult_block_save:'ذخیره مسدودسازی بزرگسال', adult_block_saved:'مسدودسازی محتوای بزرگسال ذخیره شد', adult_block_save_fail:'خطا در ذخیره تنظیمات', adult_block_saving:'در حال ذخیره...', pwd_err_current_required:'رمز عبور فعلی را وارد کنید', pwd_err_minlength:'رمز عبور جدید باید حداقل ۴ کاراکتر باشد', pwd_err_mismatch:'رمز عبور جدید و تکرار آن یکسان نیستند', pwd_err_generic:'خطا در تغییر رمز عبور', dash_qr_zoom_title:'بزرگ‌نمایی QR', wc_skip_cert_label:'رد کردن اعتبارسنجی TLS', wc_random_path_label:'مسیر تصادفی', wc_path_empty_hint:'خالی = پیش‌فرض', wc_sub_page_path_label:'آدرس صفحه ساب', wc_sub_page_path_hint:'مثال : /sub/(اسم سرویس)', wc_logs_page_path_label:'آدرس صفحه لاگ‌ها', wc_logs_page_path_hint:'مثال : /logs/(نام سرویس)', resist_title:'سیاست مقاومت', resist_desc:'قوانین مسیریابی Clash/Sing-box — پروفایل ایران/سانسور بال', resist_profile_label:'پروفایل', resist_profile_custom:'سفارشی', resist_profile_iran_high:'ایران / سانسور بال', resist_domestic_bypass:'ترافیک ایران مستقیم', resist_block_quic:'مسدودسازی QUIC', resist_ad_block:'مسدودسازی تبلیغات', resist_malware_block:'مسدودسازی بدافزار', resist_phishing_block:'مسدودسازی فیشینگ', resist_bypass_sanctions:'دور زدن تحریم‌ها', resist_doh:'DNS رمزنگاری‌شده (DoH)', resist_anti_sanction_dns:'DNS ضدتحریم', resist_save_btn:'ذخیره سیاست مقاومت', wc_security_title:'امنیت', wc_security_desc:'ECH و اتصال به پنل مرکزی', wc_ech_enable_label:'فعال‌سازی ECH', wc_ech_sni_label:'ECH SNI', wc_ech_dns_label:'ECH DoH', wc_central_api_label:'Central API (اختیاری)', wc_sub_title:'اشتراک', wc_sub_desc:'نام اشتراک، آدرس تبدیل‌گر و صفحه وضعیت کاربر', wc_sub_name_label:'نام اشتراک', wc_sub_update_label:'بازه به‌روزرسانی (ساعت)', wc_admin_page_path_label:'آدرس پنل مدیریت', wc_status_path_label:'آدرس صفحه وضعیت', wc_status_path_hint:'مثلاً servicestat یا status — لینک نهایی: /آدرس/نام‌کاربر', wc_sub_converter_label:'API تبدیل اشتراک', wc_sub_config_label:'آدرس قوانین مسیریابی (.ini)', wc_sub_emoji_label:'پرچم ایموجی در نام نودها', wc_naming_title:'نام‌گذاری کانفیگ‌ها', wc_naming_desc:'در این بخش میتوانید نام کانفیگ ها را با متغیر های ارائه شده نامگذاری کنید.', wc_first_remark_label:'کانفیگ اول (غیرقابل تغییر)', wc_info_remark_label:'کانفیگ مشخصات سرویس', wc_vars_hint:'متغیرها: {username} {dayremind} {used} {total} {expiry} {port} — مثال dayremind روزهای باقیمانده را نشان می‌دهد', wc_node_remark_label:'نام کانفیگ‌های اتصال', wc_save_btn:'ذخیره تنظیمات ', coming_soon_title:'در حال توسعه', coming_soon_desc:'به زودی...', guide_android_title:'راهنمای اتصال — اندروید', guide_android_1:'اپ V2rayNG را از لینک زیر دانلود کنید:<br><a href="https://github.com/2dust/v2rayNG/releases/latest" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://github.com/2dust/v2rayNG/releases/latest</a>', guide_android_2:'اپ را باز کنید', guide_android_3:'روی آیکون + در بالا راست بزنید', guide_android_4:'گزینه <strong>Import config from clipboard</strong> را انتخاب کنید<br><span class="text-xs opacity-70">(لینک کانفیگ باید از قبل کپی شده باشد)</span>', guide_android_5:'کانفیگ در لیست ظاهر می‌شود — روی آن بزنید تا انتخاب شود', guide_android_6:'دکمه اتصال پایین صفحه را بزنید، اکنون با موفقیت متصل شدید.', guide_ios_title:'راهنمای اتصال — آیفون (iOS)', guide_ios_1:'اپ Streisand را از App Store دانلود کنید:<br><a href="https://apps.apple.com/app/streisand/id6450534064" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://apps.apple.com/app/streisand/id6450534064</a>', guide_ios_2:'اپ را باز کنید', guide_ios_3:'روی + در بالا راست بزنید', guide_ios_4:'گزینه <strong>Import from Clipboard</strong> را بزنید<br><span class="text-xs opacity-70">(لینک کانفیگ باید از قبل کپی شده باشد)</span>', guide_ios_5:'کانفیگ اضافه شد — کنارش Connect را بزنید', guide_ios_6:'در پنجره‌ای که باز می‌شود Allow را بزنید', guide_desktop_title:'راهنمای اتصال — ویندوز / مک', guide_windows:'ویندوز', guide_mac:'مک', guide_win_1:'نرم‌افزار v2rayN را دانلود کنید:<br><a href="https://github.com/2dust/v2rayN/releases/latest" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://github.com/2dust/v2rayN/releases/latest</a>', guide_win_2:'فایل zip را extract کنید و v2rayN.exe را اجرا کنید', guide_win_3:'در تسک‌بار روی آیکون برنامه راست‌کلیک کنید', guide_win_4:'گزینه + را بزنید و نام دلخواه و لینک کپی شده را وارد کنید', guide_win_5:'از منوی بالا روی گروه اشتراک زده و گزینه سوم را بزنید', guide_win_6:'برای متصل شدن در پایین صفحه گزینه پاک کردن سیستم پروکسی را روی گزینه دوم بگذارید', guide_mac_1:'اپ FoXray را از Mac App Store دانلود کنید', guide_mac_2:'روی + بزنید و Import from clipboard را انتخاب کنید', guide_mac_3:'کانفیگ را انتخاب و Connect بزنید', guide_support:'نتوانستید متصل شوید؟ <a href="https://t.me/nexateam_bot" target="_blank" rel="noopener noreferrer" class="adm-guide-support">از قسمت پشتیبانی در بات کمک بگیرید</a>'}, en: { nav_main:'Main Menu', nav_dashboard:'Dashboard', nav_users:'User Management', nav_guide:'Connection Guide', nav_node_server:'Node Server', nav_ip_scanner:'Clean IP Scanner', nav_cdn_proxy:'CDN Proxy', nav_logs:'Activity Log', nav_wireguard:'WireGuard Service', nav_warp:'WARP Service', nav_settings:'Panel Settings', nav_panel_control:'Panel Control', nav_update_panel:'Update Panel', nav_about:'About Us', nav_backup:'Panel Backup', nav_tg_channel:'Nexa Telegram Channel', nav_tg_bot:'Nexa Support Bot', nav_collapse:'Collapse', nav_expand:'Expand', nav_logout:'Logout', panel_version:'Version ${PANEL_VERSION}', panel_subtitle:'Admin Panel', aria_menu:'Menu', aria_collapse:'Collapse', aria_close:'Close', theme_toggle:'Toggle theme', dash_sub_title:'Main Subscription Link', dash_manage_btn:'Click to manage this service', dash_copy_sub:'Copy subscription', node_server_title:'Main Node', node_server_desc:'Your node on all Cloudflare TLS ports — use the Worker domain directly, separate from subscription. Copy each port.', node_server_empty:'No node configs available', node_server_copy:'Copy', node_server_qr:'QR', dash_worker_usage:'Worker Request Usage', dash_reset_label:'Reset at:', dash_reset_meta:'Requests reset daily at 3:30 AM Tehran time', dash_top_req_title:'Top total request usage', dash_top_req_empty:'No usage recorded yet', dash_ip_title:'Your IP Details', dash_via_server:'Via this server', dash_direct_ip:'Direct IP (no proxy)', dash_city:'City', dash_region:'Region', dash_country:'Country', dash_fetching_loc:'Fetching location...', dash_click_refresh:'Click refresh to fetch', dash_loading_map:'Loading map...', dash_zoom_map:'Zoom', dash_map_via_server:'Map: via server', dash_map_direct:'Map: direct IP', dash_updating:'Updating...', ip_scanner_desc:'Find the fastest Cloudflare clean IPs for your network', ip_scan_total:'Tests to run', ip_scan_keep:'Keep best', ip_scan_ports_label:'Scan ports', ip_scan_ports_required:'Select at least one port', ip_scan_start:'Start scan', ip_scan_results:'Clean IP results', cdn_cf_banner_text:'Connect your Cloudflare token once (under a minute) for auto-updates and Worker usage stats.', cdn_cf_connect:'Connect token', cdn_access_title:'Cloudflare CDN access', cdn_access_desc:'You can get the proxy IP of your choice from the Find Proxy section.', cdn_mode_label:'Mode', cdn_proxyip_label:'PROXYIP address', cdn_proxyip_hint:'One line = one location. To show a country flag in the config name, add <code>#COUNTRYCODE</code> at the end of the line (e.g. <code>1.2.3.4#DE</code> or <code>5.6.7.8:2053#US</code>)', cdn_chain_label:'Proxy address(es)', cdn_chain_hint:'One proxy per line. One = fixed IP; two-three = auto rotation and failover.', cdn_rotate_label:'Auto-rotate', cdn_rotate_off:'Off, use all', cdn_rotate_daily:'Daily', cdn_rotate_weekly:'Weekly', cdn_rotate_count:'Active count', cdn_rotate_hint:'With several proxies, a different subset is served each day/week.', cdn_verify:'Verify', cdn_save:'Save', cdn_finder_title:'Find proxies', cdn_finder_load:'Load list', cdn_finder_desc:'You can use proxies from 68 countries by loading lists.', cdn_country_label:'Country', cdn_pick_label:'Proxy', cdn_use_selected:'Use selected', cdn_proxy_saved:'CDN proxy settings saved', cdn_proxy_fetching:'Fetching list...', cdn_proxy_list_ok:'List loaded', cdn_proxy_list_stats:'{proxies} proxies — {countries} countries', cdn_proxy_use_ok:'Filled — now save', cdn_proxy_verify_proxyip:'PROXYIP needs no separate test — checked on connect. Just Save.', cdn_proxy_verify_ok:'Proxy reachable', cdn_proxy_verify_fail:'No response', cdn_proxy_enter_first:'Enter a proxy first', ip_scan_copy:'Copy results', ip_scan_save_pool:'Save to panel pool', ip_scan_foot:'Scan runs entirely in your browser', ip_scan_prep:'Preparing…', ip_scan_testing:'Testing…', ip_scan_alive:' alive', ip_scan_none:'No responsive IP found', ip_scan_found:' clean IPs found', ip_scan_saved_pool:'Saved to panel pool', ip_scan_pool_empty:'Panel scanner pool is empty', ip_scan_pool_applied:'Scanner pool IPs applied', ip_scan_copied:'Results copied', ip_scan_pool_count:'Panel pool: {count} IPs', ip_scan_pool_title:'Panel pool', ip_scan_pool_desc:'Manage IPs stored in the panel repository', ip_scan_source_title:'Clean IP source', ip_scan_source_smart:'Smart', ip_scan_source_pool:'Clean IP pool', ip_scan_smart_desc:'In Smart mode, clean IPs are fetched from this URL:', ip_scan_auto_saved:'Scan results saved to pool', ip_scan_pool_textarea_ph:'One IP per line — e.g. 1.2.3.4 or 1.2.3.4:443', ip_scan_pool_save:'Save pool', ip_scan_pool_clear:'Clear all', ip_scan_pool_saved:'Pool saved', ip_scan_pool_cleared:'Pool cleared', ip_scan_pool_remove:'Remove', ip_scan_pool_max:'Maximum 50 IPs allowed in pool', ip_scan_pool_clear_confirm:'Clear all pool IPs?', ip_scan_server_title:'Server clean IPs', ip_scan_server_desc:'IPs fetched from /clean-ip', ip_scan_server_operator:'Operator', ip_scan_server_all:'All', ip_scan_server_refresh:'Refresh', ip_scan_server_copy:'Copy', ip_scan_server_loading:'Loading…', ip_scan_server_empty:'List is empty', dash_load_error:'Failed to load dashboard', dash_loc_not_found:'Exact location not found', dash_ip_not_found:'IP not found', dash_map_unavailable:'Map unavailable', dash_map_no_coords:'Approximate map location unavailable', dash_direct_fetch_fail:'Failed to fetch direct IP', dash_direct_ip_not_found:'Direct IP not found', dash_direct_error:'Error fetching direct IP', dash_direct_not_received:'Direct IP not received', dash_main_user_not_found:'Main user not found', stat_total:'Total Users', stat_online:'Online', stat_inactive:'Inactive', stat_expired:'Expired', users_loading:'Loading users...', search_placeholder:'Search by service name...', filter_all:'All', filter_active:'Active', filter_inactive:'Inactive', filter_online:'Online', filter_offline:'Offline', filter_expired:'Expired / Finished', sort_newest:'Newest', sort_name:'Username (A–Z)', sort_usage_desc:'Highest usage', sort_usage_asc:'Lowest usage', sort_expiry_asc:'Least time remaining', bulk_selected:'{n} services selected', bulk_deselect:'Clear selection', bulk_edit:'Bulk edit', bulk_activate:'Activate', bulk_deactivate:'Disable', bulk_reset_vol:'Reset volume', bulk_reset_time:'Reset time', bulk_reset_req:'Reset total requests', bulk_save:'Save', bulk_delete:'Delete', users_list_title:'User List', users_list_desc:'Manage services', select_all:'Select all', new_user:'New user', add_user:'Add user', th_user_ops:'User & actions', th_sub_link:'Sub link', th_protocol:'Protocol', th_port:'Port', th_volume:'Volume status', th_expiry:'Expiry status', th_requests:'Request usage', th_created:'Created', empty_no_users:'No users yet', empty_create_hint:'Click "New user" to create your first user', empty_no_results:'No results found', empty_no_match:'No user matches your search', badge_main_service:'Main service', badge_online:'● Online', badge_offline:'Offline', badge_expired:'Expired', badge_vol_done:'Volume used up', badge_time_done:'Time expired', badge_disabled:'Disabled', badge_active:'Active', badge_temp:'Temporary', badge_req_done:'Requests used up', btn_sub_link:'Sub link', btn_status:'Status', btn_logs:'Logs', btn_edit:'Edit', btn_delete:'Delete', btn_qr_sub:'Subscription QR', btn_qr_sub_link:'Sub link QR', usage_label:'Used:', req_total_label:'Total usage', req_daily_label:'Daily usage', total_label:'Total:', remaining_label:'Remaining:', unlimited:'Unlimited', days_unit:'days', activate_user:'Activate user', deactivate_user:'Disable user', reset_vol_title:'Reset service volume', reset_time_title:'Reset service time', save_enabled:'Saved — auto-delete disabled', save_disabled:'Save (prevent auto-delete after expiry)', guide_tab_android:'Android', guide_tab_ios:'iPhone', guide_tab_desktop:'Windows / Mac', usage_warn_title:'Daily request limit warning', usage_warn_body:'Your Cloudflare requests today have exceeded 90,000. If you pass the free 100,000 request limit, panel access and connections will be blocked until 3:30 AM Tehran time.', usage_warn_ok:'Got it', modal_create_title:'Create new user', modal_create_sub:'Enter VPN service settings', modal_edit_title:'Edit user', modal_edit_sub:'Edit settings for "{name}"', modal_sys_title:'Manage main service', modal_sys_sub:'Only port, clean IP and Proxy IP', modal_sys_notice:'Main service is always <strong>unlimited</strong>. Only port, clean IP and Proxy IP can be changed.', um_basic_info:'Basic info', um_username:'Service name', um_volume:'Volume (GB)', um_expiry:'Expiry (days)', um_max_conn:'Total requests', um_max_req_daily:'Daily requests', um_ports:'Connection ports', um_ports_tls:'Secure ports (TLS)', um_ports_nontls:'Regular ports (Non-TLS)', um_advanced:'Advanced settings', um_clean_ip:'Cloudflare clean IP (optional)', um_ip_pool:'Clean IP pool', um_scanner_pool:'Use panel scanner pool', um_fingerprint:'Browser fingerprint simulator', um_proxy_ip:'Custom Proxy IP (optional)', um_proxy_hint:'If empty, the panel default CDN pool will be used on connect.', um_proxy_placeholder:'Empty = use panel proxy', um_name_placeholder:'e.g. ali', um_clean_ip_placeholder:'You can get a clean IP from the panel pool or server', fp_random:'Random — default', fp_randomized:'Randomized (dynamic)', cancel:'Cancel', create_user:'Create user', save_changes:'Save changes', save_settings:'Save settings', creating:'Creating...', saving:'Saving changes...', applying:'Applying...', bulk_edit_title:'Bulk edit', bulk_apply:'Apply to selected', bulk_clean_ip:'Clean IP', bulk_ip_pool:'IP pool', ip_pool_title:'Clean IP & domain pool', ip_operator:'Operator', ip_count:'Count', ip_fetch:'Fetch', qr_scan:'Scan QR code', map_title:'Approximate location map', close:'Close', confirm_title:'Confirm action', confirm_ok:'Confirm', confirm_cancel:'Cancel', confirm_yes:'Yes, proceed', confirm_yes_delete:'Yes, delete', confirm_yes_reset:'Yes, reset', confirm_yes_restore:'Yes, restore', confirm_yes_logout:'Yes, logout', toast_select_service:'Select at least one service first', toast_no_selected:'No services selected', toast_select_field:'Select at least one field to apply', toast_select_port:'Select at least one port', toast_bulk_done:'Bulk action completed on {n} services', toast_bulk_edit_done:'Bulk edit applied to {n} services', toast_bulk_fail:'Bulk action failed', toast_bulk_edit_fail:'Bulk edit failed', toast_op_fail:'Operation failed', toast_sys_always_saved:'Main service is always saved', toast_sys_status_locked:'Main service status cannot be changed', toast_sys_reset_locked:'Cannot reset main service volume or time', toast_sys_no_delete:'System user cannot be deleted', toast_sub_copied:'Subscription link copied', toast_sub_copy_fail:'Failed to copy subscription link', toast_node_copied:'Node config copied', toast_node_copy_fail:'Failed to copy node config', toast_user_deleted:'User deleted successfully', toast_user_not_found:'User not found!', toast_conn_error:'Connection error', toast_tg_saved:'Telegram settings saved', toast_save_fail:'Save failed', toast_logs_cleared:'Logs cleared', toast_logs_load_fail:'Failed to load logs', toast_backup_restored:'Backup restored ({n} users)', toast_backup_fail:'Restore failed', toast_backup_download_fail:'Failed to download backup', toast_reset_vol_ok:'{type} reset successfully', toast_reset_vol:'Volume', toast_reset_time:'Time', bulk_confirm_title:'Bulk action', bulk_confirm_msg:'Are you sure you want to "{action}"?', bulk_delete_n:'Delete {n} services', bulk_activate_n:'Activate {n} services', bulk_deactivate_n:'Disable {n} services', bulk_reset_vol_n:'Reset volume for {n} services', bulk_reset_time_n:'Reset time for {n} services', bulk_reset_req_n:'Reset total requests for {n} services', bulk_enable_save_n:'Enable save for {n} services', reset_confirm_title:'Reset service', reset_confirm_msg:'Reset {type} for user "{name}"?', delete_user_title:'Delete user', delete_user_msg:'Delete user "{name}"?', restore_confirm_title:'Restore backup', restore_confirm_msg:'Restoring will replace all current users and settings. Continue?', clear_logs_confirm:'Delete all panel activity logs?', clear_logs_title:'Delete logs', logout_confirm:'Do you want to logout?', logout_title:'Logout', alert_select_port:'⚠️ Please select at least one connection port!', alert_error:'Error: {msg}', users_load_error:'Failed to fetch data from server', users_parse_error:'Failed to process user data', update_title:'Panel update', update_msg:'Downloading and installing new version...', update_available_title:'Update available', update_available_msg:'Version {remote} is available.\\nYour current panel version: {current}', update_later:'Later', update_complete:'Panel updated successfully', update_complete_reload:'Reloading panel...', update_failed:'Update failed', update_failed_msg:'Could not update panel.', update_cf_token_redirect:'CF_TOKEN is invalid. Redirecting to setup page...', panel_update_title:'Update Panel', panel_update_desc:'A new version of the server will be downloaded and your panel will be updated and new features will be added.', panel_update_current:'Current version', panel_update_remote:'Server version', panel_update_btn:'Update Panel', panel_update_confirm:'The latest version will be downloaded from the management server and deployed to your worker. Continue?', panel_update_available:'Version {remote} is available — your current version is {current}', panel_update_latest:'Your panel is up to date.', increase:'Increase', decrease:'Decrease', cf_token_required:'Enter Cloudflare API Token', reset_panel_fail:'Failed to reset panel', reset_panel_yes:'Yes, reset', about_kicker:'Open infrastructure dev team', about_hero_title:'Bypass filtering with your own panel', about_hero_desc:'NEXA is a group of developers building open-source tools for free internet access — on Cloudflare Workers infrastructure, no middleman, no config sales, fully under your control.', about_kicker2:'About Nexa', about_title:'Your own panel, no middleman, no cost', about_desc:'Instead of selling a service, NEXA provides a public tool. Anyone can deploy their personal connection management panel on their own Cloudflare account in minutes — fast, stable, and without trusting a middleman server.', about_f1_title:'Open source & transparent', about_f1_desc:'The panel code is fully visible; you can review everything that runs in the panel before using it.', about_f2_title:'Your own infrastructure', about_f2_desc:'The panel runs on your personal Cloudflare account; data and connections do not pass through any middleman server.', about_f3_title:'Quick setup', about_f3_desc:'In less than five minutes, without deep programming knowledge, your personal panel is ready and accessible.', about_f4_title:'Not for sale', about_f4_desc:"NEXA's goal is education and providing tools, not selling configs or internet subscriptions.", about_social:'Follow us on social media', about_social_desc:'Follow NEXA tutorials, updates and news on YouTube and Telegram.', tg_notify_title:'Telegram Notifications', tg_enable:'Enable Telegram notifications', tg_token:'Bot Token', tg_chat_id:'Chat / User ID', tg_chat_hint:'To get your chat ID, visit our bot and receive your numeric ID. Bot address: <a href="https://t.me/nexateam_bot" target="_blank" rel="noopener noreferrer">https://t.me/nexateam_bot</a>', tg_status_on:'On', tg_status_off:'Off', save:'Save', save_success:'Settings saved successfully', logs_desc:'All important panel events', refresh:'Refresh', clear_logs:'Clear all', loading:'Loading...', logs_empty:'No events yet.', col_time:'Time', col_action:'Action', col_details:'Details', backup_desc:'Download or restore users, all panel settings, activity logs and connection logs.', backup_download:'Download backup', backup_upload:'Upload backup', backup_includes:'Includes: users (all fields), worker, CDN, network, Telegram, blocked domains, CF API, activity logs and connection logs', backup_auto_title:'Daily Auto Backup', backup_auto_desc:'Every day at 00:00 (Tehran time) a full backup is sent to Telegram — requires bot token and chat ID in Activity Log section.', backup_tg_hint:'To send backups, first configure bot token and chat ID in the Activity Log section.', backup_cron_hint:'For exact 00:00 runs, add a Cloudflare Workers Cron Trigger: 30 20 * * *', backup_tg_send:'Send backup to Telegram (test)', backup_last_run:'Last auto backup', backup_last_never:'Not run yet', backup_tg_sent:'Backup sent to Telegram successfully', backup_tg_fail:'Failed to send backup to Telegram', backup_auto_saved:'Auto backup settings saved', reset_panel_title:'Reset All Settings', reset_panel_desc:'All users, proxy settings, Telegram notifications and logs will be removed. The panel will be like the first visit. Admin password is kept.', reset_panel_btn:'Reset All Settings', reset_panel_confirm:'Reset will delete all users (except main service), settings and logs. This cannot be undone. Continue?', reset_panel_success:'Panel reset successfully', pwd_info_title:'Change Admin Password', pwd_storage_note:'Password is stored in the ADMIN variable (Text type) in Cloudflare Workers.', pwd_current_label:'Current password', pwd_new_label:'New password', pwd_confirm_label:'Confirm new password', pwd_change_btn:'Change password', pwd_change_success:'Password changed successfully', cf_creds_title:'Cloudflare API Settings', cf_creds_note:'Enter only CF_TOKEN — Account ID is auto-detected from the token and saved to Worker secrets.', cf_token_label:'CF_TOKEN', cf_ac_id_label:'Account ID', cf_ac_id_auto_hint:'No manual entry needed', cf_creds_save:'Save Token', cf_creds_success:'Token saved successfully', cf_token_hint_set:'Token is configured — enter a new token to change it', panel_control_restart_title:'Restart Panel', panel_control_restart_desc:'The uptime counter and internal Worker temporary caches will be cleared. Your users and settings remain untouched.', panel_control_restart_btn:'Restart Panel', panel_control_disable_label:'Disable Admin Panel', panel_control_disable_desc:'When enabled, the login page and admin panel become inaccessible to everyone and the Nexa status page is shown instead. Active VPN services remain running. To restore access, open the URL with <code dir="ltr">?unlock=1</code> (e.g. <code dir="ltr">/admin?unlock=1</code>).', kill_all_services_label:'Disconnect all services', kill_all_services_label:'Disconnect all services', kill_all_services_desc:'When enabled, all services will be suspended and disconnected', kill_all_services_on:'All services disconnected', kill_all_services_off:'Services re-enabled', proxy_save_base:'Proxy IP settings saved', proxy_change_labels:{proxy_ips:'Proxy IP addresses (CDN)'}, proxy_ips_label:'Proxy IP addresses (CDN)', proxy_ips_hint:'Empty = default CDN pool', blocked_domains_title:'Domain blocking', blocked_domains_desc:'Listed domains cannot be accessed through the proxy. One domain per line.', blocked_domains_enable:'Enable domain blocking', blocked_domains_label:'Blocked domain list', blocked_domains_hint:'Example: example.com — subdomains are blocked too', blocked_domains_save:'Save blocking rules', blocked_domains_saved:'Domain blocking saved', wc_protocol_title:'Protocol & transport', wc_protocol_desc:'Protocol, transport, connection path and page URLs', wc_protocol_label:'Protocol', wc_transport_label:'Transport', wc_grpc_mode_label:'gRPC mode', wc_fingerprint_label:'TLS fingerprint', wc_tls_fragment_label:'TLS fragment', wc_transport_path_label:'Transport path', wc_transport_path_hint:'When a Proxy IP is set in the "CDN Proxy" section, this value is automatically set to fixip_<proxy-ip>.', wc_var_username:'Service username', wc_var_used:'Used volume so far', wc_var_total:'Total service volume (∞ = unlimited)', wc_var_dayremind:'Number of days remaining until expiry', wc_var_expiry:'Total validity in days (∞ = unlimited)', wc_var_port:'The port this specific config is built on', wc_var_proxyip:'Current Proxy IP address configured in "CDN Proxy" section', wc_var_flag:'Country flag set for this proxy (format #COUNTRYCODE after the IP)', adult_block_title:'Adult content blocking', adult_block_label:'Filter adult content (+18)', adult_block_save:'Save adult blocking', adult_block_saved:'Adult content blocking saved', adult_block_save_fail:'Failed to save settings', adult_block_saving:'Saving...', pwd_err_current_required:'Please enter your current password', pwd_err_minlength:'New password must be at least 4 characters', pwd_err_mismatch:'New password and confirmation do not match', pwd_err_generic:'Failed to change password', dash_qr_zoom_title:'Zoom QR', wc_skip_cert_label:'Skip TLS verification', wc_random_path_label:'Random path', wc_path_empty_hint:'Empty = default', wc_sub_page_path_label:'Subscription page path', wc_sub_page_path_hint:'e.g. sub — URL: /path/username', wc_logs_page_path_label:'Logs page path', wc_logs_page_path_hint:'e.g. logs — URL: /path/username', resist_title:'Resistance policy', resist_desc:'Clash/Sing-box routing rules — Iran/high censorship profile', resist_profile_label:'Profile', resist_profile_custom:'Custom', resist_profile_iran_high:'Iran / High censorship', resist_domestic_bypass:'Iran direct traffic', resist_block_quic:'Block QUIC', resist_ad_block:'Block ads', resist_malware_block:'Block malware', resist_phishing_block:'Block phishing', resist_bypass_sanctions:'Bypass sanctions', resist_doh:'Encrypted DNS (DoH)', resist_anti_sanction_dns:'Anti-sanction DNS', resist_save_btn:'Save resistance policy', wc_security_title:'Security', wc_security_desc:'ECH and central panel connection', wc_ech_enable_label:'Enable ECH', wc_ech_sni_label:'ECH SNI', wc_ech_dns_label:'ECH DoH', wc_central_api_label:'Central API (optional)', wc_sub_title:'Subscription', wc_sub_desc:'Subscription name, converter API and user status page', wc_sub_name_label:'Subscription name', wc_sub_update_label:'Update interval (hours)', wc_admin_page_path_label:'Admin panel path', wc_status_path_label:'Status page path', wc_status_path_hint:'e.g. servicestat or status — final URL: /path/username', wc_sub_converter_label:'Subscription converter API', wc_sub_config_label:'Routing rules URL (.ini)', wc_sub_emoji_label:'Emoji flags in node names', wc_naming_title:'Config naming', wc_naming_desc:'Subscription config name templates — first config (not for sale) is locked', wc_first_remark_label:'First config (locked)', wc_info_remark_label:'Service info config', wc_vars_hint:'Variables: {username} {dayremind} {used} {total} {expiry} {port} — dayremind shows remaining days', wc_node_remark_label:'Connection config names', wc_save_btn:'Save worker settings', coming_soon_title:'Under development', coming_soon_desc:'Coming soon...', guide_android_title:'Connection guide — Android', guide_android_1:'Download V2rayNG from the link below:<br><a href="https://github.com/2dust/v2rayNG/releases/latest" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://github.com/2dust/v2rayNG/releases/latest</a>', guide_android_2:'Open the app', guide_android_3:'Tap the + icon at top right', guide_android_4:'Select <strong>Import config from clipboard</strong><br><span class="text-xs opacity-70">(config link must be copied first)</span>', guide_android_5:'Config appears in the list — tap to select it', guide_android_6:'Tap the connect button at the bottom — you are now connected.', guide_ios_title:'Connection guide — iPhone (iOS)', guide_ios_1:'Download Streisand from the App Store:<br><a href="https://apps.apple.com/app/streisand/id6450534064" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://apps.apple.com/app/streisand/id6450534064</a>', guide_ios_2:'Open the app', guide_ios_3:'Tap + at top right', guide_ios_4:'Tap <strong>Import from Clipboard</strong><br><span class="text-xs opacity-70">(config link must be copied first)</span>', guide_ios_5:'Config added — tap Connect next to it', guide_ios_6:'Tap Allow in the popup', guide_desktop_title:'Connection guide — Windows / Mac', guide_windows:'Windows', guide_mac:'Mac', guide_win_1:'Download v2rayN:<br><a href="https://github.com/2dust/v2rayN/releases/latest" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://github.com/2dust/v2rayN/releases/latest</a>', guide_win_2:'Extract the zip and run v2rayN.exe', guide_win_3:'Right-click the app icon in the taskbar', guide_win_4:'Tap + and enter a name and the copied link', guide_win_5:'From the top menu, open subscription group and select the third option', guide_win_6:'To connect, set "Clear system proxy" at the bottom to the second option', guide_mac_1:'Download FoXray from the Mac App Store', guide_mac_2:'Tap + and select Import from clipboard', guide_mac_3:'Select the config and tap Connect', guide_support:'Cannot connect? <a href="https://t.me/nexateam_bot" target="_blank" rel="noopener noreferrer" class="adm-guide-support">Get help from support bot</a>' } };
+        const ADMIN_I18N = { fa: { nav_main:'منوی اصلی', nav_dashboard:'داشبورد', nav_users:'مدیریت کاربران', nav_guide:'آموزش اتصال', nav_node_server:'سرور نود', nav_ip_scanner:'اسکنر IP تمیز', nav_cdn_proxy:'پروکسی CDN', nav_logs:'لاگ فعالیت', nav_wireguard:'سرویس WireGuard', nav_warp:'سرویس WARP', nav_settings:'تنظیمات پنل', nav_panel_control:'کنترل پنل', nav_update_panel:'به‌روزرسانی پنل', nav_about:'درباره ما', nav_backup:'بکاپ پنل', nav_tg_channel:'کانال تلگرام Nexa', nav_tg_bot:'بات پشتیبانی Nexa', nav_collapse:'جمع کردن منو', nav_expand:'باز کردن', nav_logout:'خروج', panel_version:'نسخه ${PANEL_VERSION}', panel_subtitle:'پنل مدیریت', aria_menu:'منو', aria_collapse:'جمع کردن منو', aria_close:'بستن', theme_toggle:'تغییر تم', dash_sub_title:'لینک اشتراک اصلی', dash_manage_btn:'برای مدیریت این سرویس کلیک کنید', dash_copy_sub:'کپی اشتراک', node_server_title:'نود اصلی', node_server_desc:'نود شما روی همه‌ی پورت‌های TLS کلودفلر، با استفاده‌ی مستقیم از دامنه‌ی ورکر، جدا از اشتراک، هر پورت را کپی کنید.', node_server_empty:'کانفیگ نودی در دسترس نیست', node_server_copy:'کپی', node_server_qr:'QR', dash_worker_usage:'مصرف ریکوئست Worker', dash_reset_label:'ریست ساعت:', dash_reset_meta:'ریست ریکوئست‌ها در ساعت 3:30 به وقت تهران', dash_top_req_title:'بیشترین مصرف ریکوئست کل', dash_top_req_empty:'هنوز مصرفی ثبت نشده', dash_ip_title:'مشخصات IP شما', dash_via_server:'از طریق این سرور', dash_direct_ip:'IP مستقیم (بدون پروکسی)', dash_city:'شهر', dash_region:'منطقه', dash_country:'کشور', dash_fetching_loc:'در حال دریافت موقعیت...', dash_click_refresh:'برای دریافت، بروزرسانی را بزنید', dash_loading_map:'در حال بارگذاری نقشه...', dash_zoom_map:'بزرگ‌نمایی', dash_map_via_server:'نقشه: از طریق سرور', dash_map_direct:'نقشه: IP مستقیم', dash_updating:'در حال بروزرسانی...', ip_scanner_desc:'سریع‌ترین آی‌پی‌های تمیز کلودفلر را برای شبکه‌تان پیدا کنید', ip_scan_total:'تعداد ایپی مورد نظر برای تست', ip_scan_keep:'انتخاب بهترین ایپی ', ip_scan_ports_label:'پورت‌های اسکن', ip_scan_ports_required:'حداقل یک پورت انتخاب کنید', ip_scan_start:'شروع اسکن', ip_scan_results:'نتایج آی‌پی تمیز', cdn_cf_banner_text:'برای بروزرسانی خودکار و نمایش «مصرف ورکر»، یک‌بار توکن Cloudflare را وصل کن، کمتر از یک دقیقه.', cdn_cf_connect:'اتصال توکن', cdn_access_title:'دسترسی CDN کلودفلر', cdn_access_desc:'از بخش یافتن پروکسی میتوانید پروکسی ایپی مد نظر خود را دریافت کنید.', cdn_proxyip_label:'آدرس PROXYIP', cdn_proxyip_hint:'هر خط = یک لوکیشن. اگه می‌خوای پرچم کشورش هم توی اسم کانفیگ بیاد، انتهای اون خط بنویس <code>#کدکشور</code> (مثال: <code>1.2.3.4#DE</code> یا <code>5.6.7.8:2053#US</code>)', cdn_verify:'بررسی', cdn_save:'ذخیره', cdn_finder_title:'یافتن پروکسی', cdn_finder_load:'دریافت فهرست', cdn_finder_desc:'شما میتوانید با لود فهرست ها از پروکسی 68 کشور استفاده کنید. ', cdn_country_label:'کشور', cdn_pick_label:'پروکسی', cdn_use_selected:'استفاده از انتخاب', cdn_proxy_saved:'تنظیمات پروکسی CDN ذخیره شد', cdn_proxy_fetching:'در حال دریافت فهرست...', cdn_proxy_list_ok:'فهرست دریافت شد', cdn_proxy_list_stats:'{proxies} پروکسی — {countries} کشور', cdn_proxy_use_ok:'پر شد — اکنون ذخیره کنید', cdn_proxy_verify_proxyip:'PROXYIP نیاز به تست جدا ندارد — هنگام اتصال خودکار بررسی می‌شود. فقط ذخیره کنید.', cdn_proxy_verify_ok:'پروکسی در دسترس است', cdn_proxy_verify_fail:'پاسخی دریافت نشد', cdn_proxy_enter_first:'ابتدا آدرس پروکسی را وارد کنید', ip_scan_copy:'کپی نتایج', ip_scan_save_pool:'ذخیره در مخزن پنل', ip_scan_foot:'اسکن کاملاً در مرورگر شما انجام می‌شود', ip_scan_prep:'در حال آماده‌سازی…', ip_scan_testing:'در حال تست…', ip_scan_alive:' سالم', ip_scan_none:'هیچ IP سالمی پیدا نشد', ip_scan_found:' IP تمیز پیدا شد', ip_scan_saved_pool:'در مخزن پنل ذخیره شد', ip_scan_pool_empty:'مخزن اسکنر پنل خالی است', ip_scan_pool_applied:'آی‌پی‌های مخزن اسکنر اعمال شد', ip_scan_copied:'نتایج کپی شد', ip_scan_pool_count:'مخزن پنل: {count} آی‌پی', ip_scan_pool_title:'مخزن پنل', ip_scan_pool_desc:'مدیریت آی‌پی‌های ذخیره‌شده در مخزن پنل', ip_scan_source_title:'منبع آی‌پی تمیز', ip_scan_source_smart:'هوشمند', ip_scan_source_pool:'مخزن ایپی تمیز', ip_scan_smart_desc:'در حالت هوشمند، آی‌پی‌های تمیز از لینک زیر دریافت می‌شوند:', ip_scan_auto_saved:'نتایج اسکن در مخزن ذخیره شد', ip_scan_pool_textarea_ph:'هر خط یک IP — مثال: 1.2.3.4 یا 1.2.3.4:443', ip_scan_pool_save:'ذخیره مخزن', ip_scan_pool_clear:'پاک کردن همه', ip_scan_pool_saved:'مخزن ذخیره شد', ip_scan_pool_cleared:'مخزن پاک شد', ip_scan_pool_remove:'حذف', ip_scan_pool_max:'حداکثر ۵۰ آی‌پی در مخزن مجاز است', ip_scan_pool_clear_confirm:'همه آی‌پی‌های مخزن پاک شوند؟', ip_scan_server_title:'ایپی تمیز سرور', ip_scan_server_desc:'لیست آی‌پی‌های دریافتی از /clean-ip', ip_scan_server_operator:'اپراتور', ip_scan_server_all:'همه', ip_scan_server_refresh:'بروزرسانی', ip_scan_server_copy:'کپی', ip_scan_server_loading:'در حال بارگذاری…', ip_scan_server_empty:'لیست خالی است', dash_load_error:'خطا در بارگذاری داشبورد', dash_loc_not_found:'موقعیت دقیق یافت نشد', dash_ip_not_found:'IP یافت نشد', dash_map_unavailable:'نقشه در دسترس نیست', dash_map_no_coords:'موقعیت تقریبی روی نقشه در دسترس نیست', dash_direct_fetch_fail:'دریافت IP مستقیم ناموفق بود', dash_direct_ip_not_found:'IP مستقیم یافت نشد', dash_direct_error:'خطا در دریافت IP مستقیم', dash_direct_not_received:'IP مستقیم دریافت نشد', dash_main_user_not_found:'کاربر اصلی یافت نشد', stat_total:'کل کاربران', stat_online:'آنلاین', stat_inactive:'غیرفعال', stat_expired:'منقضی', users_loading:'در حال بارگذاری کاربران...', search_placeholder:'جستجوی با نام سرویس ...', filter_all:'همه', filter_active:'فعال', filter_inactive:'غیرفعال', filter_online:'آنلاین', filter_offline:'آفلاین', filter_expired:'منقضی / تمام شده', sort_newest:'جدیدترین', sort_name:'نام کاربری (الفبا)', sort_usage_desc:'بیشترین مصرف', sort_usage_asc:'کمترین مصرف', sort_expiry_asc:'کمترین زمان باقی‌مانده', bulk_selected:'{n} سرویس انتخاب شده', bulk_deselect:'لغو انتخاب', bulk_edit:'ویرایش گروهی', bulk_activate:'فعال', bulk_deactivate:'قطع', bulk_reset_vol:'ریست حجم', bulk_reset_time:'ریست زمان', bulk_reset_req:'ریست ریکوئست کل', bulk_save:'ذخیره', bulk_delete:'حذف', users_list_title:'لیست کاربران', users_list_desc:'مدیریت سرویس ها', select_all:'انتخاب همه', new_user:'کاربر جدید', add_user:'افزودن کاربر', th_user_ops:'نام کاربر و عملیات', th_sub_link:'لینک ساب', th_protocol:'پروتکل', th_port:'پورت', th_volume:'وضعیت حجم', th_expiry:'وضعیت اعتبار', th_requests:'مصرف ریکوئست', th_created:'تاریخ ساخت', empty_no_users:'کاربری وجود ندارد', empty_create_hint:'برای ساخت اولین کاربر روی «کاربر جدید» کلیک کنید', empty_no_results:'نتیجه‌ای یافت نشد', empty_no_match:'کاربری با مشخصات جستجو شده پیدا نشد', badge_main_service:'سرویس اصلی', badge_online:'● آنلاین', badge_offline:'آفلاین', badge_expired:'منقضی', badge_vol_done:'حجم تمام', badge_time_done:'زمان تمام', badge_disabled:'قطع', badge_active:'فعال', badge_temp:'موقت', badge_req_done:'ریکوئست تمام', btn_sub_link:'لینک ساب', btn_status:'وضعیت', btn_logs:'لاگ', btn_edit:'ویرایش', btn_delete:'حذف', btn_qr_sub:'qrcode اشتراک', btn_qr_sub_link:'qrcode لینک ساب', usage_label:'مصرف:', req_total_label:'مصرف کل', req_daily_label:'مصرف روزانه', total_label:'کل:', remaining_label:'باقی‌مانده:', unlimited:'نامحدود', days_unit:'روز', activate_user:'فعال کردن کاربر', deactivate_user:'قطع کردن کاربر', reset_vol_title:'ریست حجم سرویس', reset_time_title:'ریست زمان سرویس', save_enabled:'ذخیره شده — حذف خودکار غیرفعال', save_disabled:'ذخیره (جلوگیری از حذف خودکار پس از انقضا)', guide_tab_android:'اندروید', guide_tab_ios:'آیفون', guide_tab_desktop:'ویندوز / مک', usage_warn_title:'هشدار محدودیت درخواست روزانه', usage_warn_body:'درخواست‌های امروز کلودفلر شما از مرز ۹۰,۰۰۰ عبور کرده است. در صورت عبور از محدودیت رایگان ۱۰۰,۰۰۰ درخواست، دسترسی به پنل و اتصالات تا ساعت ۳:۳۰ بامداد (به وقت ایران) قطع خواهد شد.', usage_warn_ok:'متوجه شدم', modal_create_title:'ایجاد کاربر جدید', modal_create_sub:'تنظیمات سرویس VPN را وارد کنید', modal_edit_title:'ویرایش کاربر', modal_edit_sub:'ویرایش تنظیمات «{name}»', modal_sys_title:'مدیریت سرویس اصلی', modal_sys_sub:'فقط پورت، آیپی تمیز و Proxy IP', modal_sys_notice:'سرویس اصلی همیشه <strong>نامحدود</strong> است. فقط پورت، آیپی تمیز و Proxy IP قابل تغییر است.', um_basic_info:'اطلاعات پایه', um_username:'نام سرویس', um_volume:'حجم (GB)', um_expiry:'اعتبار (روز)', um_max_conn:'ریکوئست کل', um_max_req_daily:'ریکوئست روزانه', um_ports:'پورت‌های اتصال', um_ports_tls:'پورت‌های امن (TLS)', um_ports_nontls:'پورت‌های معمولی (Non-TLS)', um_advanced:'تنظیمات پیشرفته', um_clean_ip:'آیپی تمیز ', um_ip_pool:'دریافت ایپی تمیز از سرور', um_scanner_pool:'استفاده از مخزن اسکنر پنل', um_fingerprint:'Fingerprint ', um_proxy_ip:'Proxy IP اختصاصی (اختیاری)', um_proxy_hint:'اگر خالی باشد، هنگام اتصال از پول CDN پیش‌فرض پنل استفاده می‌شود.', um_proxy_placeholder:'خالی = استفاده از پروکسی پنل', um_name_placeholder:'مثال: ali', um_clean_ip_placeholder:'میتوانید ایپی تمیز خود را از مخزن پنل یا از سرور ما', fp_random:'Random (اتفاقی) — پیش‌فرض', fp_randomized:'Randomized (پویا)', cancel:'انصراف', create_user:'ایجاد کاربر', save_changes:'ذخیره تغییرات', save_settings:'ذخیره تنظیمات', creating:'در حال ایجاد...', saving:'در حال ذخیره تغییرات...', applying:'در حال اعمال...', bulk_edit_title:'ویرایش گروهی', bulk_apply:'اعمال روی انتخاب‌شده‌ها', bulk_clean_ip:'آیپی تمیز', bulk_ip_pool:'مخزن آیپی', ip_pool_title:'دریافت ایپی تمیز و دامنه پشت کلادفلر', ip_operator:'اوپراتور', ip_count:'تعداد', ip_fetch:'دریافت', qr_scan:'اسکن کد QR', map_title:'نقشه موقعیت تقریبی', close:'بستن', confirm_title:'تأیید عملیات', confirm_ok:'تأیید', confirm_cancel:'انصراف', confirm_yes:'بله، انجام شود', confirm_yes_delete:'بله، حذف شود', confirm_yes_reset:'بله، ریست شود', confirm_yes_restore:'بله، بازیابی شود', confirm_yes_logout:'بله، خروج', toast_select_service:'ابتدا حداقل یک سرویس را انتخاب کنید', toast_no_selected:'هیچ سرویسی انتخاب نشده است', toast_select_field:'حداقل یک فیلد را برای اعمال انتخاب کنید', toast_select_port:'حداقل یک پورت انتخاب کنید', toast_bulk_done:'عملیات گروهی روی {n} سرویس انجام شد', toast_bulk_edit_done:'ویرایش گروهی روی {n} سرویس انجام شد', toast_bulk_fail:'خطا در عملیات گروهی', toast_bulk_edit_fail:'خطا در ویرایش گروهی', toast_op_fail:'عملیات ناموفق بود', toast_sys_always_saved:'سرویس اصلی همیشه ذخیره است', toast_sys_status_locked:'وضعیت سرویس اصلی قابل تغییر نیست', toast_sys_reset_locked:'ریست حجم یا زمان سرویس اصلی مجاز نیست', toast_sys_no_delete:'این کاربر سیستمی است و قابل حذف نیست', toast_sub_copied:'لینک ساب با موفقیت کپی شد', toast_sub_copy_fail:'خطا در کپی کردن لینک ساب', toast_node_copied:'کانفیگ نود کپی شد', toast_node_copy_fail:'خطا در کپی کانفیگ نود', toast_user_deleted:'کاربر با موفقیت حذف شد', toast_user_not_found:'کاربر یافت نشد!', toast_conn_error:'خطا در برقراری ارتباط با سرور', toast_tg_saved:'تنظیمات تلگرام ذخیره شد', toast_save_fail:'خطا در ذخیره', toast_logs_cleared:'لاگ‌ها حذف شدند', toast_logs_load_fail:'خطا در بارگذاری لاگ‌ها', toast_backup_restored:'بکاپ با موفقیت بازیابی شد ({n} کاربر)', toast_backup_fail:'خطا در بازیابی', toast_backup_download_fail:'خطا در دریافت بکاپ', toast_reset_vol_ok:'ریست {type} با موفقیت انجام شد', toast_reset_vol:'حجم', toast_reset_time:'زمان', bulk_confirm_title:'عملیات گروهی', bulk_confirm_msg:'آیا از «{action}» مطمئن هستید؟', bulk_delete_n:'حذف {n} سرویس', bulk_activate_n:'فعال‌سازی {n} سرویس', bulk_deactivate_n:'قطع {n} سرویس', bulk_reset_vol_n:'ریست حجم {n} سرویس', bulk_reset_time_n:'ریست زمان {n} سرویس', bulk_reset_req_n:'ریست ریکوئست کل {n} سرویس', bulk_enable_save_n:'فعال‌سازی ذخیره برای {n} سرویس', reset_confirm_title:'ریست سرویس', reset_confirm_msg:'آیا از ریست {type} سرویس کاربر «{name}» مطمئن هستید؟', delete_user_title:'حذف کاربر', delete_user_msg:'آیا از حذف کاربر «{name}» مطمئن هستید؟', restore_confirm_title:'بازیابی بکاپ', restore_confirm_msg:'با بازیابی بکاپ، تمام کاربران و تنظیمات فعلی جایگزین می‌شوند. ادامه می‌دهید؟', clear_logs_confirm:'آیا از حذف همه لاگ‌های پنل مطمئن هستید؟', clear_logs_title:'حذف لاگ‌ها', logout_confirm:'آیا می‌خواهید از پنل خارج شوید؟', logout_title:'خروج از پنل', alert_select_port:'⚠️ لطفا حداقل یک پورت را برای اتصال انتخاب کنید!', alert_error:'خطا: {msg}', users_load_error:'خطا در دریافت اطلاعات از سرور', users_parse_error:'خطا در پردازش اطلاعات کاربران', update_title:'به‌روزرسانی پنل', update_msg:'در حال دریافت و نصب نسخه جدید...', update_available_title:'به‌روزرسانی موجود است', update_available_msg:'نسخه جدید {remote} در دسترس است.\\nنسخه فعلی پنل شما: {current}', update_later:'بعداً', update_complete:'اپدیت با موفقیت انجام شد', update_complete_reload:'در حال بارگذاری مجدد پنل...', update_failed:'خطا در به‌روزرسانی', update_failed_msg:'به‌روزرسانی پنل انجام نشد.', update_cf_token_redirect:'توکن CF_TOKEN معتبر نیست. در حال انتقال به صفحه راه‌اندازی...', panel_update_title:'به‌روزرسانی پنل', panel_update_desc:'نسخه جدید از سرور دریافت و پنل شما اپدیت و ویژگی های جدید اضافه خواهد شد.', panel_update_current:'نسخه فعلی', panel_update_remote:'نسخه سرور', panel_update_btn:'به‌روزرسانی پنل', panel_update_confirm:'نسخه جدید از سرور مدیریت دریافت و روی ورکر شما نصب می‌شود. ادامه می‌دهید؟', panel_update_available:'نسخه {remote} موجود است — نسخه فعلی شما {current}', panel_update_latest:'پنل شما به‌روز است.', increase:'افزایش', decrease:'کاهش', cf_token_required:'توکن API کلودفلر را وارد کنید', reset_panel_fail:'خطا در بازنشانی پنل', reset_panel_yes:'بله، بازنشانی شود', about_kicker:'تیم توسعه‌ی زیرساخت آزاد', about_hero_title:'عبور از فیلترینگ، با پنل خودت', about_hero_desc:'NEXA گروهی از توسعه‌دهنده‌هاست که ابزارهای متن‌باز برای دسترسی آزاد به اینترنت می‌سازد — روی زیرساخت Cloudflare Workers، بدون واسطه، بدون فروش کانفیگ، و کاملاً در اختیار خودت.', about_kicker2:'درباره‌ی نکسا', about_title:'پنل شخصی، بدون واسطه و هزینه', about_desc:'NEXA به جای فروش سرویس، ابزار عمومی در اختیار می‌گذارد. هرکسی می‌تواند در چند دقیقه، روی اکانت Cloudflare خودش، پنل مدیریت اتصال شخصی‌اش را بالا بیاورد؛ سریع، پایدار و بدون نیاز به اعتماد به یک سرور واسط.', about_f1_title:'متن‌باز و شفاف', about_f1_desc:'کد پنل کاملاً قابل مشاهده است؛ هرچه در پنل اجرا می‌شود را می‌توانی پیش از استفاده بررسی کنی.', about_f2_title:'زیرساخت خودت', about_f2_desc:'پنل روی حساب Cloudflare شخصی تو اجرا می‌شود؛ داده‌ها و اتصال‌ها از کانال هیچ سرور واسطی عبور نمی‌کند.', about_f3_title:'راه‌اندازی سریع', about_f3_desc:'در کمتر از پنج دقیقه، بدون دانش عمیق برنامه‌نویسی، پنل شخصی‌ات آماده و در دسترس است.', about_f4_title:'بدون قصد فروش', about_f4_desc:'هدف NEXA آموزش و در دسترس گذاشتن ابزار است، نه فروش کانفیگ یا اشتراک اینترنت.', about_social:'ما را در شبکه‌های اجتماعی دنبال کنید', about_social_desc:'آموزش‌ها، به‌روزرسانی‌ها و اخبار تیم NEXA را از یوتیوب و تلگرام دنبال کن.', tg_notify_title:'اعلان‌های تلگرام', tg_enable:'فعال‌سازی اعلان تلگرام', tg_token:'توکن ربات', tg_chat_id:'شناسه چت / کاربر', tg_chat_hint:'برای دریافت شناسه چت خود به بات ما مراجعه کنید و ایدی عددی خود را دریافت کنید . ادرس بات : <a href="https://t.me/nexateam_bot" target="_blank" rel="noopener noreferrer">https://t.me/nexateam_bot</a>', tg_status_on:'روشن', tg_status_off:'خاموش', save:'ذخیره', save_success:'تنظیمات با موفقیت ذخیره شد', logs_desc:'تمام رویدادهای مهم پنل', refresh:'بروزرسانی', clear_logs:'حذف همه', loading:'در حال بارگذاری...', logs_empty:'هنوز رویدادی ثبت نشده است.', col_time:'زمان', col_action:'عملیات', col_details:'جزئیات', backup_desc:'کاربران، تمام تنظیمات پنل و لاگ فعالیت را دانلود یا بازیابی کنید.', backup_download:'دریافت بکاپ', backup_upload:'بارگذاری بکاپ', backup_includes:'تمام بخش های پنل شامل میشود.', backup_auto_title:'بکاپ خودکار روزانه', backup_auto_desc:'هر روز ساعت ۰۰:۰۰ (به وقت تهران) بکاپ کامل به تلگرام ارسال می‌شود — نیاز به تنظیم توکن و شناسه چت در بخش لاگ فعالیت دارد.', backup_tg_hint:'برای ارسال بکاپ، ابتدا توکن ربات و شناسه چت را در بخش «لاگ فعالیت» تنظیم کنید.', backup_cron_hint:'برای اجرای دقیق ساعت ۰۰:۰۰، در Cloudflare Workers یک Cron Trigger با مقدار 30 20 * * * اضافه کنید. (اگر پنل را با سایت یا ربات ساختید نیاز به تنظیم نیست .)', backup_tg_send:'ارسال بکاپ به تلگرام (تست)', backup_last_run:'آخرین بکاپ خودکار', backup_last_never:'هنوز اجرا نشده', backup_tg_sent:'بکاپ با موفقیت به تلگرام ارسال شد', backup_tg_fail:'خطا در ارسال بکاپ به تلگرام', backup_auto_saved:'تنظیمات بکاپ خودکار ذخیره شد', reset_panel_title:'بازنشانی تمام تنظیمات', reset_panel_desc:'تمام کاربران، تنظیمات پروکسی، اعلان تلگرام و لاگ‌ها حذف می‌شوند. پنل مانند اولین ورود خواهد بود. رمز عبور مدیریت حفظ می‌شود.', reset_panel_btn:'بازنشانی تمام تنظیمات', reset_panel_confirm:'با بازنشانی، تمام کاربران (به‌جز سرویس اصلی)، تنظیمات و لاگ‌ها حذف می‌شوند. این عمل قابل بازگشت نیست. ادامه می‌دهید؟', reset_panel_success:'پنل با موفقیت بازنشانی شد', pwd_info_title:'تغییر رمز عبور مدیریت', pwd_storage_note:'رمز عبور در متغیر ADMIN (نوع Text) در Cloudflare Workers ذخیره می‌شود.', pwd_current_label:'رمز عبور فعلی', pwd_new_label:'رمز عبور جدید', pwd_confirm_label:'تکرار رمز جدید', pwd_change_btn:'تغییر رمز عبور', pwd_change_success:'رمز عبور با موفقیت تغییر کرد', cf_creds_title:'تنظیمات Cloudflare API', cf_creds_note:'فقط CF_TOKEN را وارد کنید — Account ID خودکار از توکن دریافت و در ورکر ذخیره می‌شود.', cf_token_label:'CF_TOKEN', cf_ac_id_label:'Account ID', cf_ac_id_auto_hint:'نیازی به وارد کردن دستی نیست', cf_creds_save:'ذخیره توکن', cf_creds_success:'توکن با موفقیت ذخیره شد', cf_token_hint_set:'توکن فعلی تنظیم شده — برای تغییر، توکن جدید وارد کنید', panel_control_restart_title:'ری‌استارت پنل', panel_control_restart_desc:'شمارشگر آپتایم و کش‌های موقت داخلی ورکر پاک‌سازی می‌شود. کاربران و تنظیمات شما دست‌نخورده باقی می‌مانند.', panel_control_restart_btn:'ری‌استارت پنل', panel_control_disable_label:'خاموش کردن پنل مدیریت', panel_control_disable_desc:'با فعال شدن این گزینه، صفحه ورود و پنل مدیریت برای همه غیرقابل دسترسی می‌شود و صفحه وضعیت Nexa نمایش داده می‌شود. سرویس‌های VPN فعال باقی می‌مانند. برای بازگشت، آدرس را با <code dir="ltr">?unlock=1</code> باز کنید (مثال: <code dir="ltr">/admin?unlock=1</code>).', kill_all_services_label:'قطع تمامی سرویس‌ها', kill_all_services_label:'قطع تمامی سرویس‌ها', kill_all_services_desc:'با روشن شدن این گزینه تمامی سرویس‌ها متوقف و قطع خواهند شد در صورتی که مورد سو استفاده قرار گرفتید این گزینه را روشن کنید و با عوض کردن ادرس ها پنل خود را امن کنید .', kill_all_services_on:'تمامی سرویس‌ها قطع شدند', kill_all_services_off:'سرویس‌ها مجدداً فعال شدند', proxy_save_base:'تنظیمات Proxy IP ذخیره شد', proxy_change_labels:{proxy_ips:'آدرس‌های Proxy IP (CDN)'}, proxy_ips_label:'آدرس‌های Proxy IP (CDN)', proxy_ips_hint:'خالی = استفاده از پول CDN پیش‌فرض (در صورت خالی گذاشتن از ایپی پروکسی پنل استفاده میشود. و ...)', blocked_domains_title:'مسدودسازی دامنه', blocked_domains_desc:'دامنه‌هایی که وارد کنید از طریق پروکسی باز نمی‌شوند. هر دامنه در یک خط.', blocked_domains_enable:'فعال‌سازی مسدودسازی', blocked_domains_label:'لیست دامنه‌های مسدود', blocked_domains_hint:'مثال: example.com — زیردامنه‌ها هم مسدود می‌شوند', blocked_domains_save:'ذخیره مسدودسازی', blocked_domains_saved:'مسدودسازی دامنه ذخیره شد', wc_protocol_title:'تنظیمات ادرس صفحات', wc_protocol_desc:'تنظیمات انتقال، مسیر اتصال و آدرس صفحات', wc_protocol_label:'پروتکل', wc_transport_label:'حمل‌ونقل', wc_grpc_mode_label:'حالت gRPC', wc_fingerprint_label:'TLS Fingerprint', wc_tls_fragment_label:'TLS Fragment', wc_transport_path_label:'مسیر انتقال', wc_transport_path_hint:'وقتی در بخش «پروکسی CDN» یک Proxy IP ست کنید، این مقدار خودکار روی fixip_<proxy-ip> تنظیم می‌شود.', wc_var_username:'نام کاربری سرویس', wc_var_used:'حجم مصرف‌شده تا این لحظه', wc_var_total:'حجم کل سرویس (∞ یعنی نامحدود)', wc_var_dayremind:'تعداد روزهای باقی‌مانده تا انقضا', wc_var_expiry:'کل مدت اعتبار به روز (∞ یعنی نامحدود)', wc_var_port:'پورتی که این کانفیگ خاص روی آن ساخته شده', wc_var_proxyip:'آدرس Proxy IP فعلیِ تنظیم‌شده در بخش «پروکسی CDN»', wc_var_flag:'پرچم کشوری که برای این پروکسی مشخص کردی (فرمت #کدکشور جلوی آی‌پی)', adult_block_title:'مسدودسازی محتوای بزرگسال', adult_block_label:'فیلتر کردن محتوای بزرگ سال (+18)', adult_block_save:'ذخیره مسدودسازی بزرگسال', adult_block_saved:'مسدودسازی محتوای بزرگسال ذخیره شد', adult_block_save_fail:'خطا در ذخیره تنظیمات', adult_block_saving:'در حال ذخیره...', pwd_err_current_required:'رمز عبور فعلی را وارد کنید', pwd_err_minlength:'رمز عبور جدید باید حداقل ۴ کاراکتر باشد', pwd_err_mismatch:'رمز عبور جدید و تکرار آن یکسان نیستند', pwd_err_generic:'خطا در تغییر رمز عبور', dash_qr_zoom_title:'بزرگ‌نمایی QR', wc_skip_cert_label:'رد کردن اعتبارسنجی TLS', wc_random_path_label:'مسیر تصادفی', wc_path_empty_hint:'خالی = پیش‌فرض', wc_sub_page_path_label:'آدرس صفحه ساب', wc_sub_page_path_hint:'مثال : /sub/(اسم سرویس)', wc_logs_page_path_label:'آدرس صفحه لاگ‌ها', wc_logs_page_path_hint:'مثال : /logs/(نام سرویس)', resist_title:'سیاست مقاومت', resist_desc:'قوانین مسیریابی Clash/Sing-box — پروفایل ایران/سانسور بال', resist_profile_label:'پروفایل', resist_profile_custom:'سفارشی', resist_profile_iran_high:'ایران / سانسور بال', resist_domestic_bypass:'ترافیک ایران مستقیم', resist_block_quic:'مسدودسازی QUIC', resist_ad_block:'مسدودسازی تبلیغات', resist_malware_block:'مسدودسازی بدافزار', resist_phishing_block:'مسدودسازی فیشینگ', resist_bypass_sanctions:'دور زدن تحریم‌ها', resist_doh:'DNS رمزنگاری‌شده (DoH)', resist_anti_sanction_dns:'DNS ضدتحریم', resist_save_btn:'ذخیره سیاست مقاومت', wc_security_title:'امنیت', wc_security_desc:'ECH و اتصال به پنل مرکزی', wc_ech_enable_label:'فعال‌سازی ECH', wc_ech_sni_label:'ECH SNI', wc_ech_dns_label:'ECH DoH', wc_central_api_label:'Central API (اختیاری)', wc_sub_title:'اشتراک', wc_sub_desc:'نام اشتراک، آدرس تبدیل‌گر و صفحه وضعیت کاربر', wc_sub_name_label:'نام اشتراک', wc_sub_update_label:'بازه به‌روزرسانی (ساعت)', wc_admin_page_path_label:'آدرس پنل مدیریت', wc_status_path_label:'آدرس صفحه وضعیت', wc_status_path_hint:'مثلاً servicestat یا status — لینک نهایی: /آدرس/نام‌کاربر', wc_sub_converter_label:'API تبدیل اشتراک', wc_sub_config_label:'آدرس قوانین مسیریابی (.ini)', wc_sub_emoji_label:'پرچم ایموجی در نام نودها', wc_naming_title:'نام‌گذاری کانفیگ‌ها', wc_naming_desc:'در این بخش میتوانید نام کانفیگ ها را با متغیر های ارائه شده نامگذاری کنید.', wc_first_remark_label:'کانفیگ اول (غیرقابل تغییر)', wc_info_remark_label:'کانفیگ مشخصات سرویس', wc_vars_hint:'متغیرها: {username} {dayremind} {used} {total} {expiry} {port} — مثال dayremind روزهای باقیمانده را نشان می‌دهد', wc_node_remark_label:'نام کانفیگ‌های اتصال', wc_save_btn:'ذخیره تنظیمات ', coming_soon_title:'در حال توسعه', coming_soon_desc:'به زودی...', guide_android_title:'راهنمای اتصال — اندروید', guide_android_1:'اپ V2rayNG را از لینک زیر دانلود کنید:<br><a href="https://github.com/2dust/v2rayNG/releases/latest" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://github.com/2dust/v2rayNG/releases/latest</a>', guide_android_2:'اپ را باز کنید', guide_android_3:'روی آیکون + در بالا راست بزنید', guide_android_4:'گزینه <strong>Import config from clipboard</strong> را انتخاب کنید<br><span class="text-xs opacity-70">(لینک کانفیگ باید از قبل کپی شده باشد)</span>', guide_android_5:'کانفیگ در لیست ظاهر می‌شود — روی آن بزنید تا انتخاب شود', guide_android_6:'دکمه اتصال پایین صفحه را بزنید، اکنون با موفقیت متصل شدید.', guide_ios_title:'راهنمای اتصال — آیفون (iOS)', guide_ios_1:'اپ Streisand را از App Store دانلود کنید:<br><a href="https://apps.apple.com/app/streisand/id6450534064" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://apps.apple.com/app/streisand/id6450534064</a>', guide_ios_2:'اپ را باز کنید', guide_ios_3:'روی + در بالا راست بزنید', guide_ios_4:'گزینه <strong>Import from Clipboard</strong> را بزنید<br><span class="text-xs opacity-70">(لینک کانفیگ باید از قبل کپی شده باشد)</span>', guide_ios_5:'کانفیگ اضافه شد — کنارش Connect را بزنید', guide_ios_6:'در پنجره‌ای که باز می‌شود Allow را بزنید', guide_desktop_title:'راهنمای اتصال — ویندوز / مک', guide_windows:'ویندوز', guide_mac:'مک', guide_win_1:'نرم‌افزار v2rayN را دانلود کنید:<br><a href="https://github.com/2dust/v2rayN/releases/latest" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://github.com/2dust/v2rayN/releases/latest</a>', guide_win_2:'فایل zip را extract کنید و v2rayN.exe را اجرا کنید', guide_win_3:'در تسک‌بار روی آیکون برنامه راست‌کلیک کنید', guide_win_4:'گزینه + را بزنید و نام دلخواه و لینک کپی شده را وارد کنید', guide_win_5:'از منوی بالا روی گروه اشتراک زده و گزینه سوم را بزنید', guide_win_6:'برای متصل شدن در پایین صفحه گزینه پاک کردن سیستم پروکسی را روی گزینه دوم بگذارید', guide_mac_1:'اپ FoXray را از Mac App Store دانلود کنید', guide_mac_2:'روی + بزنید و Import from clipboard را انتخاب کنید', guide_mac_3:'کانفیگ را انتخاب و Connect بزنید', guide_support:'نتوانستید متصل شوید؟ <a href="https://t.me/nexateam_bot" target="_blank" rel="noopener noreferrer" class="adm-guide-support">از قسمت پشتیبانی در بات کمک بگیرید</a>'}, en: { nav_main:'Main Menu', nav_dashboard:'Dashboard', nav_users:'User Management', nav_guide:'Connection Guide', nav_node_server:'Node Server', nav_ip_scanner:'Clean IP Scanner', nav_cdn_proxy:'CDN Proxy', nav_logs:'Activity Log', nav_wireguard:'WireGuard Service', nav_warp:'WARP Service', nav_settings:'Panel Settings', nav_panel_control:'Panel Control', nav_update_panel:'Update Panel', nav_about:'About Us', nav_backup:'Panel Backup', nav_tg_channel:'Nexa Telegram Channel', nav_tg_bot:'Nexa Support Bot', nav_collapse:'Collapse', nav_expand:'Expand', nav_logout:'Logout', panel_version:'Version ${PANEL_VERSION}', panel_subtitle:'Admin Panel', aria_menu:'Menu', aria_collapse:'Collapse', aria_close:'Close', theme_toggle:'Toggle theme', dash_sub_title:'Main Subscription Link', dash_manage_btn:'Click to manage this service', dash_copy_sub:'Copy subscription', node_server_title:'Main Node', node_server_desc:'Your node on all Cloudflare TLS ports — use the Worker domain directly, separate from subscription. Copy each port.', node_server_empty:'No node configs available', node_server_copy:'Copy', node_server_qr:'QR', dash_worker_usage:'Worker Request Usage', dash_reset_label:'Reset at:', dash_reset_meta:'Requests reset daily at 3:30 AM Tehran time', dash_top_req_title:'Top total request usage', dash_top_req_empty:'No usage recorded yet', dash_ip_title:'Your IP Details', dash_via_server:'Via this server', dash_direct_ip:'Direct IP (no proxy)', dash_city:'City', dash_region:'Region', dash_country:'Country', dash_fetching_loc:'Fetching location...', dash_click_refresh:'Click refresh to fetch', dash_loading_map:'Loading map...', dash_zoom_map:'Zoom', dash_map_via_server:'Map: via server', dash_map_direct:'Map: direct IP', dash_updating:'Updating...', ip_scanner_desc:'Find the fastest Cloudflare clean IPs for your network', ip_scan_total:'Tests to run', ip_scan_keep:'Keep best', ip_scan_ports_label:'Scan ports', ip_scan_ports_required:'Select at least one port', ip_scan_start:'Start scan', ip_scan_results:'Clean IP results', cdn_cf_banner_text:'Connect your Cloudflare token once (under a minute) for auto-updates and Worker usage stats.', cdn_cf_connect:'Connect token', cdn_access_title:'Cloudflare CDN access', cdn_access_desc:'You can get the proxy IP of your choice from the Find Proxy section.',  cdn_proxyip_label:'PROXYIP address', cdn_proxyip_hint:'One line = one location. To show a country flag in the config name, add <code>#COUNTRYCODE</code> at the end of the line (e.g. <code>1.2.3.4#DE</code> or <code>5.6.7.8:2053#US</code>)', cdn_verify:'Verify', cdn_save:'Save', cdn_finder_title:'Find proxies', cdn_finder_load:'Load list', cdn_finder_desc:'You can use proxies from 68 countries by loading lists.', cdn_country_label:'Country', cdn_pick_label:'Proxy', cdn_use_selected:'Use selected', cdn_proxy_saved:'CDN proxy settings saved', cdn_proxy_fetching:'Fetching list...', cdn_proxy_list_ok:'List loaded', cdn_proxy_list_stats:'{proxies} proxies — {countries} countries', cdn_proxy_use_ok:'Filled — now save', cdn_proxy_verify_proxyip:'PROXYIP needs no separate test — checked on connect. Just Save.', cdn_proxy_verify_ok:'Proxy reachable', cdn_proxy_verify_fail:'No response', cdn_proxy_enter_first:'Enter a proxy first', ip_scan_copy:'Copy results', ip_scan_save_pool:'Save to panel pool', ip_scan_foot:'Scan runs entirely in your browser', ip_scan_prep:'Preparing…', ip_scan_testing:'Testing…', ip_scan_alive:' alive', ip_scan_none:'No responsive IP found', ip_scan_found:' clean IPs found', ip_scan_saved_pool:'Saved to panel pool', ip_scan_pool_empty:'Panel scanner pool is empty', ip_scan_pool_applied:'Scanner pool IPs applied', ip_scan_copied:'Results copied', ip_scan_pool_count:'Panel pool: {count} IPs', ip_scan_pool_title:'Panel pool', ip_scan_pool_desc:'Manage IPs stored in the panel repository', ip_scan_source_title:'Clean IP source', ip_scan_source_smart:'Smart', ip_scan_source_pool:'Clean IP pool', ip_scan_smart_desc:'In Smart mode, clean IPs are fetched from this URL:', ip_scan_auto_saved:'Scan results saved to pool', ip_scan_pool_textarea_ph:'One IP per line — e.g. 1.2.3.4 or 1.2.3.4:443', ip_scan_pool_save:'Save pool', ip_scan_pool_clear:'Clear all', ip_scan_pool_saved:'Pool saved', ip_scan_pool_cleared:'Pool cleared', ip_scan_pool_remove:'Remove', ip_scan_pool_max:'Maximum 50 IPs allowed in pool', ip_scan_pool_clear_confirm:'Clear all pool IPs?', ip_scan_server_title:'Server clean IPs', ip_scan_server_desc:'IPs fetched from /clean-ip', ip_scan_server_operator:'Operator', ip_scan_server_all:'All', ip_scan_server_refresh:'Refresh', ip_scan_server_copy:'Copy', ip_scan_server_loading:'Loading…', ip_scan_server_empty:'List is empty', dash_load_error:'Failed to load dashboard', dash_loc_not_found:'Exact location not found', dash_ip_not_found:'IP not found', dash_map_unavailable:'Map unavailable', dash_map_no_coords:'Approximate map location unavailable', dash_direct_fetch_fail:'Failed to fetch direct IP', dash_direct_ip_not_found:'Direct IP not found', dash_direct_error:'Error fetching direct IP', dash_direct_not_received:'Direct IP not received', dash_main_user_not_found:'Main user not found', stat_total:'Total Users', stat_online:'Online', stat_inactive:'Inactive', stat_expired:'Expired', users_loading:'Loading users...', search_placeholder:'Search by service name...', filter_all:'All', filter_active:'Active', filter_inactive:'Inactive', filter_online:'Online', filter_offline:'Offline', filter_expired:'Expired / Finished', sort_newest:'Newest', sort_name:'Username (A–Z)', sort_usage_desc:'Highest usage', sort_usage_asc:'Lowest usage', sort_expiry_asc:'Least time remaining', bulk_selected:'{n} services selected', bulk_deselect:'Clear selection', bulk_edit:'Bulk edit', bulk_activate:'Activate', bulk_deactivate:'Disable', bulk_reset_vol:'Reset volume', bulk_reset_time:'Reset time', bulk_reset_req:'Reset total requests', bulk_save:'Save', bulk_delete:'Delete', users_list_title:'User List', users_list_desc:'Manage services', select_all:'Select all', new_user:'New user', add_user:'Add user', th_user_ops:'User & actions', th_sub_link:'Sub link', th_protocol:'Protocol', th_port:'Port', th_volume:'Volume status', th_expiry:'Expiry status', th_requests:'Request usage', th_created:'Created', empty_no_users:'No users yet', empty_create_hint:'Click "New user" to create your first user', empty_no_results:'No results found', empty_no_match:'No user matches your search', badge_main_service:'Main service', badge_online:'● Online', badge_offline:'Offline', badge_expired:'Expired', badge_vol_done:'Volume used up', badge_time_done:'Time expired', badge_disabled:'Disabled', badge_active:'Active', badge_temp:'Temporary', badge_req_done:'Requests used up', btn_sub_link:'Sub link', btn_status:'Status', btn_logs:'Logs', btn_edit:'Edit', btn_delete:'Delete', btn_qr_sub:'Subscription QR', btn_qr_sub_link:'Sub link QR', usage_label:'Used:', req_total_label:'Total usage', req_daily_label:'Daily usage', total_label:'Total:', remaining_label:'Remaining:', unlimited:'Unlimited', days_unit:'days', activate_user:'Activate user', deactivate_user:'Disable user', reset_vol_title:'Reset service volume', reset_time_title:'Reset service time', save_enabled:'Saved — auto-delete disabled', save_disabled:'Save (prevent auto-delete after expiry)', guide_tab_android:'Android', guide_tab_ios:'iPhone', guide_tab_desktop:'Windows / Mac', usage_warn_title:'Daily request limit warning', usage_warn_body:'Your Cloudflare requests today have exceeded 90,000. If you pass the free 100,000 request limit, panel access and connections will be blocked until 3:30 AM Tehran time.', usage_warn_ok:'Got it', modal_create_title:'Create new user', modal_create_sub:'Enter VPN service settings', modal_edit_title:'Edit user', modal_edit_sub:'Edit settings for "{name}"', modal_sys_title:'Manage main service', modal_sys_sub:'Only port, clean IP and Proxy IP', modal_sys_notice:'Main service is always <strong>unlimited</strong>. Only port, clean IP and Proxy IP can be changed.', um_basic_info:'Basic info', um_username:'Service name', um_volume:'Volume (GB)', um_expiry:'Expiry (days)', um_max_conn:'Total requests', um_max_req_daily:'Daily requests', um_ports:'Connection ports', um_ports_tls:'Secure ports (TLS)', um_ports_nontls:'Regular ports (Non-TLS)', um_advanced:'Advanced settings', um_clean_ip:'Cloudflare clean IP (optional)', um_ip_pool:'Clean IP pool', um_scanner_pool:'Use panel scanner pool', um_fingerprint:'Browser fingerprint simulator', um_proxy_ip:'Custom Proxy IP (optional)', um_proxy_hint:'If empty, the panel default CDN pool will be used on connect.', um_proxy_placeholder:'Empty = use panel proxy', um_name_placeholder:'e.g. ali', um_clean_ip_placeholder:'You can get a clean IP from the panel pool or server', fp_random:'Random — default', fp_randomized:'Randomized (dynamic)', cancel:'Cancel', create_user:'Create user', save_changes:'Save changes', save_settings:'Save settings', creating:'Creating...', saving:'Saving changes...', applying:'Applying...', bulk_edit_title:'Bulk edit', bulk_apply:'Apply to selected', bulk_clean_ip:'Clean IP', bulk_ip_pool:'IP pool', ip_pool_title:'Clean IP & domain pool', ip_operator:'Operator', ip_count:'Count', ip_fetch:'Fetch', qr_scan:'Scan QR code', map_title:'Approximate location map', close:'Close', confirm_title:'Confirm action', confirm_ok:'Confirm', confirm_cancel:'Cancel', confirm_yes:'Yes, proceed', confirm_yes_delete:'Yes, delete', confirm_yes_reset:'Yes, reset', confirm_yes_restore:'Yes, restore', confirm_yes_logout:'Yes, logout', toast_select_service:'Select at least one service first', toast_no_selected:'No services selected', toast_select_field:'Select at least one field to apply', toast_select_port:'Select at least one port', toast_bulk_done:'Bulk action completed on {n} services', toast_bulk_edit_done:'Bulk edit applied to {n} services', toast_bulk_fail:'Bulk action failed', toast_bulk_edit_fail:'Bulk edit failed', toast_op_fail:'Operation failed', toast_sys_always_saved:'Main service is always saved', toast_sys_status_locked:'Main service status cannot be changed', toast_sys_reset_locked:'Cannot reset main service volume or time', toast_sys_no_delete:'System user cannot be deleted', toast_sub_copied:'Subscription link copied', toast_sub_copy_fail:'Failed to copy subscription link', toast_node_copied:'Node config copied', toast_node_copy_fail:'Failed to copy node config', toast_user_deleted:'User deleted successfully', toast_user_not_found:'User not found!', toast_conn_error:'Connection error', toast_tg_saved:'Telegram settings saved', toast_save_fail:'Save failed', toast_logs_cleared:'Logs cleared', toast_logs_load_fail:'Failed to load logs', toast_backup_restored:'Backup restored ({n} users)', toast_backup_fail:'Restore failed', toast_backup_download_fail:'Failed to download backup', toast_reset_vol_ok:'{type} reset successfully', toast_reset_vol:'Volume', toast_reset_time:'Time', bulk_confirm_title:'Bulk action', bulk_confirm_msg:'Are you sure you want to "{action}"?', bulk_delete_n:'Delete {n} services', bulk_activate_n:'Activate {n} services', bulk_deactivate_n:'Disable {n} services', bulk_reset_vol_n:'Reset volume for {n} services', bulk_reset_time_n:'Reset time for {n} services', bulk_reset_req_n:'Reset total requests for {n} services', bulk_enable_save_n:'Enable save for {n} services', reset_confirm_title:'Reset service', reset_confirm_msg:'Reset {type} for user "{name}"?', delete_user_title:'Delete user', delete_user_msg:'Delete user "{name}"?', restore_confirm_title:'Restore backup', restore_confirm_msg:'Restoring will replace all current users and settings. Continue?', clear_logs_confirm:'Delete all panel activity logs?', clear_logs_title:'Delete logs', logout_confirm:'Do you want to logout?', logout_title:'Logout', alert_select_port:'⚠️ Please select at least one connection port!', alert_error:'Error: {msg}', users_load_error:'Failed to fetch data from server', users_parse_error:'Failed to process user data', update_title:'Panel update', update_msg:'Downloading and installing new version...', update_available_title:'Update available', update_available_msg:'Version {remote} is available.\\nYour current panel version: {current}', update_later:'Later', update_complete:'Panel updated successfully', update_complete_reload:'Reloading panel...', update_failed:'Update failed', update_failed_msg:'Could not update panel.', update_cf_token_redirect:'CF_TOKEN is invalid. Redirecting to setup page...', panel_update_title:'Update Panel', panel_update_desc:'A new version of the server will be downloaded and your panel will be updated and new features will be added.', panel_update_current:'Current version', panel_update_remote:'Server version', panel_update_btn:'Update Panel', panel_update_confirm:'The latest version will be downloaded from the management server and deployed to your worker. Continue?', panel_update_available:'Version {remote} is available — your current version is {current}', panel_update_latest:'Your panel is up to date.', increase:'Increase', decrease:'Decrease', cf_token_required:'Enter Cloudflare API Token', reset_panel_fail:'Failed to reset panel', reset_panel_yes:'Yes, reset', about_kicker:'Open infrastructure dev team', about_hero_title:'Bypass filtering with your own panel', about_hero_desc:'NEXA is a group of developers building open-source tools for free internet access — on Cloudflare Workers infrastructure, no middleman, no config sales, fully under your control.', about_kicker2:'About Nexa', about_title:'Your own panel, no middleman, no cost', about_desc:'Instead of selling a service, NEXA provides a public tool. Anyone can deploy their personal connection management panel on their own Cloudflare account in minutes — fast, stable, and without trusting a middleman server.', about_f1_title:'Open source & transparent', about_f1_desc:'The panel code is fully visible; you can review everything that runs in the panel before using it.', about_f2_title:'Your own infrastructure', about_f2_desc:'The panel runs on your personal Cloudflare account; data and connections do not pass through any middleman server.', about_f3_title:'Quick setup', about_f3_desc:'In less than five minutes, without deep programming knowledge, your personal panel is ready and accessible.', about_f4_title:'Not for sale', about_f4_desc:"NEXA's goal is education and providing tools, not selling configs or internet subscriptions.", about_social:'Follow us on social media', about_social_desc:'Follow NEXA tutorials, updates and news on YouTube and Telegram.', tg_notify_title:'Telegram Notifications', tg_enable:'Enable Telegram notifications', tg_token:'Bot Token', tg_chat_id:'Chat / User ID', tg_chat_hint:'To get your chat ID, visit our bot and receive your numeric ID. Bot address: <a href="https://t.me/nexateam_bot" target="_blank" rel="noopener noreferrer">https://t.me/nexateam_bot</a>', tg_status_on:'On', tg_status_off:'Off', save:'Save', save_success:'Settings saved successfully', logs_desc:'All important panel events', refresh:'Refresh', clear_logs:'Clear all', loading:'Loading...', logs_empty:'No events yet.', col_time:'Time', col_action:'Action', col_details:'Details', backup_desc:'Download or restore users, all panel settings, activity logs and connection logs.', backup_download:'Download backup', backup_upload:'Upload backup', backup_includes:'Includes: users (all fields), worker, CDN, network, Telegram, blocked domains, CF API, activity logs and connection logs', backup_auto_title:'Daily Auto Backup', backup_auto_desc:'Every day at 00:00 (Tehran time) a full backup is sent to Telegram — requires bot token and chat ID in Activity Log section.', backup_tg_hint:'To send backups, first configure bot token and chat ID in the Activity Log section.', backup_cron_hint:'For exact 00:00 runs, add a Cloudflare Workers Cron Trigger: 30 20 * * *', backup_tg_send:'Send backup to Telegram (test)', backup_last_run:'Last auto backup', backup_last_never:'Not run yet', backup_tg_sent:'Backup sent to Telegram successfully', backup_tg_fail:'Failed to send backup to Telegram', backup_auto_saved:'Auto backup settings saved', reset_panel_title:'Reset All Settings', reset_panel_desc:'All users, proxy settings, Telegram notifications and logs will be removed. The panel will be like the first visit. Admin password is kept.', reset_panel_btn:'Reset All Settings', reset_panel_confirm:'Reset will delete all users (except main service), settings and logs. This cannot be undone. Continue?', reset_panel_success:'Panel reset successfully', pwd_info_title:'Change Admin Password', pwd_storage_note:'Password is stored in the ADMIN variable (Text type) in Cloudflare Workers.', pwd_current_label:'Current password', pwd_new_label:'New password', pwd_confirm_label:'Confirm new password', pwd_change_btn:'Change password', pwd_change_success:'Password changed successfully', cf_creds_title:'Cloudflare API Settings', cf_creds_note:'Enter only CF_TOKEN — Account ID is auto-detected from the token and saved to Worker secrets.', cf_token_label:'CF_TOKEN', cf_ac_id_label:'Account ID', cf_ac_id_auto_hint:'No manual entry needed', cf_creds_save:'Save Token', cf_creds_success:'Token saved successfully', cf_token_hint_set:'Token is configured — enter a new token to change it', panel_control_restart_title:'Restart Panel', panel_control_restart_desc:'The uptime counter and internal Worker temporary caches will be cleared. Your users and settings remain untouched.', panel_control_restart_btn:'Restart Panel', panel_control_disable_label:'Disable Admin Panel', panel_control_disable_desc:'When enabled, the login page and admin panel become inaccessible to everyone and the Nexa status page is shown instead. Active VPN services remain running. To restore access, open the URL with <code dir="ltr">?unlock=1</code> (e.g. <code dir="ltr">/admin?unlock=1</code>).', kill_all_services_label:'Disconnect all services', kill_all_services_label:'Disconnect all services', kill_all_services_desc:'When enabled, all services will be suspended and disconnected', kill_all_services_on:'All services disconnected', kill_all_services_off:'Services re-enabled', proxy_save_base:'Proxy IP settings saved', proxy_change_labels:{proxy_ips:'Proxy IP addresses (CDN)'}, proxy_ips_label:'Proxy IP addresses (CDN)', proxy_ips_hint:'Empty = default CDN pool', blocked_domains_title:'Domain blocking', blocked_domains_desc:'Listed domains cannot be accessed through the proxy. One domain per line.', blocked_domains_enable:'Enable domain blocking', blocked_domains_label:'Blocked domain list', blocked_domains_hint:'Example: example.com — subdomains are blocked too', blocked_domains_save:'Save blocking rules', blocked_domains_saved:'Domain blocking saved', wc_protocol_title:'Protocol & transport', wc_protocol_desc:'Protocol, transport, connection path and page URLs', wc_protocol_label:'Protocol', wc_transport_label:'Transport', wc_grpc_mode_label:'gRPC mode', wc_fingerprint_label:'TLS fingerprint', wc_tls_fragment_label:'TLS fragment', wc_transport_path_label:'Transport path', wc_transport_path_hint:'When a Proxy IP is set in the "CDN Proxy" section, this value is automatically set to fixip_<proxy-ip>.', wc_var_username:'Service username', wc_var_used:'Used volume so far', wc_var_total:'Total service volume (∞ = unlimited)', wc_var_dayremind:'Number of days remaining until expiry', wc_var_expiry:'Total validity in days (∞ = unlimited)', wc_var_port:'The port this specific config is built on', wc_var_proxyip:'Current Proxy IP address configured in "CDN Proxy" section', wc_var_flag:'Country flag set for this proxy (format #COUNTRYCODE after the IP)', adult_block_title:'Adult content blocking', adult_block_label:'Filter adult content (+18)', adult_block_save:'Save adult blocking', adult_block_saved:'Adult content blocking saved', adult_block_save_fail:'Failed to save settings', adult_block_saving:'Saving...', pwd_err_current_required:'Please enter your current password', pwd_err_minlength:'New password must be at least 4 characters', pwd_err_mismatch:'New password and confirmation do not match', pwd_err_generic:'Failed to change password', dash_qr_zoom_title:'Zoom QR', wc_skip_cert_label:'Skip TLS verification', wc_random_path_label:'Random path', wc_path_empty_hint:'Empty = default', wc_sub_page_path_label:'Subscription page path', wc_sub_page_path_hint:'e.g. sub — URL: /path/username', wc_logs_page_path_label:'Logs page path', wc_logs_page_path_hint:'e.g. logs — URL: /path/username', resist_title:'Resistance policy', resist_desc:'Clash/Sing-box routing rules — Iran/high censorship profile', resist_profile_label:'Profile', resist_profile_custom:'Custom', resist_profile_iran_high:'Iran / High censorship', resist_domestic_bypass:'Iran direct traffic', resist_block_quic:'Block QUIC', resist_ad_block:'Block ads', resist_malware_block:'Block malware', resist_phishing_block:'Block phishing', resist_bypass_sanctions:'Bypass sanctions', resist_doh:'Encrypted DNS (DoH)', resist_anti_sanction_dns:'Anti-sanction DNS', resist_save_btn:'Save resistance policy', wc_security_title:'Security', wc_security_desc:'ECH and central panel connection', wc_ech_enable_label:'Enable ECH', wc_ech_sni_label:'ECH SNI', wc_ech_dns_label:'ECH DoH', wc_central_api_label:'Central API (optional)', wc_sub_title:'Subscription', wc_sub_desc:'Subscription name, converter API and user status page', wc_sub_name_label:'Subscription name', wc_sub_update_label:'Update interval (hours)', wc_admin_page_path_label:'Admin panel path', wc_status_path_label:'Status page path', wc_status_path_hint:'e.g. servicestat or status — final URL: /path/username', wc_sub_converter_label:'Subscription converter API', wc_sub_config_label:'Routing rules URL (.ini)', wc_sub_emoji_label:'Emoji flags in node names', wc_naming_title:'Config naming', wc_naming_desc:'Subscription config name templates — first config (not for sale) is locked', wc_first_remark_label:'First config (locked)', wc_info_remark_label:'Service info config', wc_vars_hint:'Variables: {username} {dayremind} {used} {total} {expiry} {port} — dayremind shows remaining days', wc_node_remark_label:'Connection config names', wc_save_btn:'Save worker settings', coming_soon_title:'Under development', coming_soon_desc:'Coming soon...', guide_android_title:'Connection guide — Android', guide_android_1:'Download V2rayNG from the link below:<br><a href="https://github.com/2dust/v2rayNG/releases/latest" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://github.com/2dust/v2rayNG/releases/latest</a>', guide_android_2:'Open the app', guide_android_3:'Tap the + icon at top right', guide_android_4:'Select <strong>Import config from clipboard</strong><br><span class="text-xs opacity-70">(config link must be copied first)</span>', guide_android_5:'Config appears in the list — tap to select it', guide_android_6:'Tap the connect button at the bottom — you are now connected.', guide_ios_title:'Connection guide — iPhone (iOS)', guide_ios_1:'Download Streisand from the App Store:<br><a href="https://apps.apple.com/app/streisand/id6450534064" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://apps.apple.com/app/streisand/id6450534064</a>', guide_ios_2:'Open the app', guide_ios_3:'Tap + at top right', guide_ios_4:'Tap <strong>Import from Clipboard</strong><br><span class="text-xs opacity-70">(config link must be copied first)</span>', guide_ios_5:'Config added — tap Connect next to it', guide_ios_6:'Tap Allow in the popup', guide_desktop_title:'Connection guide — Windows / Mac', guide_windows:'Windows', guide_mac:'Mac', guide_win_1:'Download v2rayN:<br><a href="https://github.com/2dust/v2rayN/releases/latest" target="_blank" rel="noopener noreferrer" class="adm-guide-link">https://github.com/2dust/v2rayN/releases/latest</a>', guide_win_2:'Extract the zip and run v2rayN.exe', guide_win_3:'Right-click the app icon in the taskbar', guide_win_4:'Tap + and enter a name and the copied link', guide_win_5:'From the top menu, open subscription group and select the third option', guide_win_6:'To connect, set "Clear system proxy" at the bottom to the second option', guide_mac_1:'Download FoXray from the Mac App Store', guide_mac_2:'Tap + and select Import from clipboard', guide_mac_3:'Select the config and tap Connect', guide_support:'Cannot connect? <a href="https://t.me/nexateam_bot" target="_blank" rel="noopener noreferrer" class="adm-guide-support">Get help from support bot</a>' } };
         function getAdminLang() {
             return localStorage.getItem('nexa-admin-lang') || 'fa';
         }
@@ -11291,14 +11120,13 @@ Commercial support is available at
             if (!tlsContainer || !nonTlsContainer) return;
             const inputName = opts.inputName || 'ports';
             const defaultTls = opts.defaultTls !== undefined ? opts.defaultTls : ['443'];
-            const defaultNonTls = opts.defaultNonTls !== undefined ? opts.defaultNonTls : ['80'];
+            const defaultNonTls = opts.defaultNonTls !== undefined ? opts.defaultNonTls : [];
             tlsContainer.innerHTML = tlsPorts.map(function(port) {
                 const isCheckedDefault = defaultTls.includes(port) ? 'checked' : '';
                 return '<label class="relative cursor-pointer block">' +
                     '<input type="checkbox" name="' + inputName + '" value="' + port + '" ' + isCheckedDefault + ' class="peer sr-only">' +
                     '<div class="port-chip port-chip-tls">' +
                         '<span>' + port + '</span>' +
-                        '<svg class="port-chip-check" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg>' +
                     '</div>' +
                 '</label>';
             }).join('');
@@ -11308,7 +11136,6 @@ Commercial support is available at
                     '<input type="checkbox" name="' + inputName + '" value="' + port + '" ' + isCheckedDefault + ' class="peer sr-only">' +
                     '<div class="port-chip port-chip-nontls">' +
                         '<span>' + port + '</span>' +
-                        '<svg class="port-chip-check" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg>' +
                     '</div>' +
                 '</label>';
             }).join('');
@@ -13188,47 +13015,26 @@ function cdnProxySetMsg(id, text, kind) {
     if (kind) el.classList.add(kind);
 }
 function cdnProxyApplyMode() {
-    const modeEl = document.getElementById('cdn-proxy-mode');
-    const mode = modeEl ? modeEl.value : 'proxyip';
     const secProxy = document.getElementById('cdn-sec-proxyip');
-    const secChain = document.getElementById('cdn-sec-chain');
-    const isProxyIp = mode === 'proxyip';
-    if (secProxy) secProxy.classList.toggle('hidden', !isProxyIp);
-    if (secChain) secChain.classList.toggle('hidden', isProxyIp);
+    if (secProxy) secProxy.classList.remove('hidden');
 }
 async function loadCdnProxySettingsForm() {
     try {
         const res = await fetch('/api/proxy-ip');
         if (!res.ok) return;
         const data = await res.json();
-        const modeEl = document.getElementById('cdn-proxy-mode');
-        if (modeEl && data.mode) modeEl.value = data.mode;
         const proxyIpInput = document.getElementById('cdn-proxyip-input');
         if (proxyIpInput) {
             if (data.proxy_ips && data.proxy_ips.length) proxyIpInput.value = data.proxy_ips.join('\\n');
             else proxyIpInput.value = data.proxy_ip || 'auto';
         }
-        const chainInput = document.getElementById('cdn-chain-input');
-        if (chainInput) chainInput.value = data.chain_proxy || '';
-        const rotateEvery = document.getElementById('cdn-rotate-every');
-        if (rotateEvery) rotateEvery.value = data.socks5_rotate_every || '';
-        const rotateCount = document.getElementById('cdn-rotate-count');
-        if (rotateCount) rotateCount.value = data.socks5_rotate_count || 3;
         cdnProxyApplyMode();
     } catch (e) {}
 }
 async function saveCdnProxySettings() {
-    const modeEl = document.getElementById('cdn-proxy-mode');
-    const mode = modeEl ? modeEl.value : 'proxyip';
-    const payload = { mode: mode };
-    if (mode === 'proxyip') {
-        const val = (document.getElementById('cdn-proxyip-input') || {}).value.trim() || 'auto';
-        payload.proxy_ip = val;
-    } else {
-        payload.chain_proxy = (document.getElementById('cdn-chain-input') || {}).value.trim();
-        payload.socks5_rotate_every = (document.getElementById('cdn-rotate-every') || {}).value || '';
-        payload.socks5_rotate_count = Number((document.getElementById('cdn-rotate-count') || {}).value) || 3;
-    }
+    const payload = { mode: 'proxyip' };
+    const val = (document.getElementById('cdn-proxyip-input') || {}).value.trim() || 'auto';
+    payload.proxy_ip = val;
     const btn = document.getElementById('save-cdn-proxy-btn');
     if (btn) btn.disabled = true;
     try {
@@ -13251,36 +13057,10 @@ async function saveCdnProxySettings() {
 }
 
 async function verifyCdnProxySettings() {
-    const modeEl = document.getElementById('cdn-proxy-mode');
-    const mode = modeEl ? modeEl.value : 'proxyip';
-    if (mode === 'proxyip') {
-        cdnProxySetMsg('cdn-proxy-msg', cdnProxyT('cdn_proxy_verify_proxyip'), 'info');
-        return;
-    }
-    const val = (document.getElementById('cdn-chain-input') || {}).value.trim();
-    if (!val) {
-        cdnProxySetMsg('cdn-proxy-msg', cdnProxyT('cdn_proxy_enter_first'), 'bad');
-        return;
-    }
-    const first = val.split(/[\\r\\n]+/).map(function(s) { return s.trim(); }).filter(Boolean)[0] || '';
-    const btn = document.getElementById('cdn-proxy-verify-btn');
-    if (btn) btn.disabled = true;
-    try {
-        const res = await fetch('/api/proxy-check?' + encodeURIComponent(mode) + '=' + encodeURIComponent(first));
-        const data = await res.json().catch(function() { return {}; });
-        if (data.success) cdnProxySetMsg('cdn-proxy-msg', data.message || cdnProxyT('cdn_proxy_verify_ok'), 'ok');
-        else cdnProxySetMsg('cdn-proxy-msg', data.error || data.message || cdnProxyT('cdn_proxy_verify_fail'), 'bad');
-    } catch (e) {
-        cdnProxySetMsg('cdn-proxy-msg', cdnProxyT('cdn_proxy_verify_fail'), 'bad');
-    } finally {
-        if (btn) btn.disabled = false;
-    }
+    cdnProxySetMsg('cdn-proxy-msg', cdnProxyT('cdn_proxy_verify_proxyip'), 'info');
 }
 function cdnProxyPublicListUrl(mode) {
     if (mode === 'proxyip') return 'https://cdn.jsdelivr.net/gh/IRNova/Tools@main/all.json';
-    if (mode === 'http') return 'https://cdn.jsdelivr.net/gh/proxifly/proxifly@main/proxies/protocols/http/data.json';
-    if (mode === 'https') return 'https://cdn.jsdelivr.net/gh/proxifly/proxifly@main/proxies/protocols/https/data.json';
-    if (mode === 'socks5') return 'https://cdn.jsdelivr.net/gh/proxifly/proxifly@main/proxies/protocols/socks5/data.json';
     return '';
 }
 function cdnProxyFormatListStats(proxyCount, countryCount) {
@@ -13299,16 +13079,6 @@ function cdnProxyNormalizeProxyIpEntry(item) {
     else if (country) label = value + ' (' + country + ')';
     else if (city) label = city + ' - ' + value;
     return { label: label, value: value, country: country, city: city };
-}
-function cdnProxyNormalizePublicEntry(item, mode) {
-    if (!item) return null;
-    if (typeof item === 'string') return { label: item, value: item, country: '' };
-    const host = item.ip || item.host || item.hostname || '';
-    const port = item.port || (mode === 'https' ? 443 : mode === 'http' ? 80 : 1080);
-    if (!host) return null;
-    const value = host + ':' + port;
-    const country = item.country || item.geo || (item.meta && item.meta.country) || '';
-    return { label: value + (country ? ' (' + country + ')' : ''), value: value, country: country };
 }
 async function cdnProxyFetchPublicListJson(mode) {
     const url = cdnProxyPublicListUrl(mode);
@@ -13377,8 +13147,7 @@ function cdnProxyBuildCountryGroups(entries) {
     return byCountry;
 }
 async function loadCdnProxyPublicList() {
-    const modeEl = document.getElementById('cdn-proxy-mode');
-    const mode = modeEl ? modeEl.value : 'proxyip';
+    const mode = 'proxyip';
     const btn = document.getElementById('cdn-proxy-list-btn');
     const countrySel = document.getElementById('cdn-proxy-country');
     cdnProxySetMsg('cdn-proxy-more-msg', cdnProxyT('cdn_proxy_fetching'), 'info');
@@ -13407,17 +13176,6 @@ async function loadCdnProxyPublicList() {
                 });
             }
             totalProxies = (json.list && json.list.ips) || cdnProxyPublicAll.length;
-            countryCount = Object.keys(cdnProxyPublicCountryCounts).length;
-            cdnProxyFillCountrySelect(countrySel, cdnProxyPublicCountryCounts);
-        } else {
-            const arr = Array.isArray(json) ? json : (Array.isArray(json.proxies) ? json.proxies : []);
-            cdnProxyPublicAll = arr.map(function(item) { return cdnProxyNormalizePublicEntry(item, mode); }).filter(Boolean);
-            cdnProxyPublicByCountry = cdnProxyBuildCountryGroups(cdnProxyPublicAll);
-            cdnProxyPublicCountryCounts = {};
-            Object.keys(cdnProxyPublicByCountry).forEach(function(cc) {
-                cdnProxyPublicCountryCounts[cc] = cdnProxyPublicByCountry[cc].length;
-            });
-            totalProxies = cdnProxyPublicAll.length;
             countryCount = Object.keys(cdnProxyPublicCountryCounts).length;
             cdnProxyFillCountrySelect(countrySel, cdnProxyPublicCountryCounts);
         }
@@ -13449,19 +13207,8 @@ function useCdnProxySelection() {
     const pickSel = document.getElementById('cdn-proxy-pick');
     const val = pickSel ? pickSel.value : '';
     if (!val) return;
-    const modeEl = document.getElementById('cdn-proxy-mode');
-    const mode = modeEl ? modeEl.value : 'proxyip';
-    if (mode === 'proxyip') {
-        const input = document.getElementById('cdn-proxyip-input');
-        if (input) input.value = val;
-    } else {
-        const input = document.getElementById('cdn-chain-input');
-        if (input) {
-            const lines = String(input.value || '').split(/[\\r\\n]+/).map(function(s) { return s.trim(); }).filter(Boolean);
-            if (lines.indexOf(val) === -1) lines.unshift(val);
-            input.value = lines.join('\\n');
-        }
-    }
+    const input = document.getElementById('cdn-proxyip-input');
+    if (input) input.value = val;
     cdnProxySetMsg('cdn-proxy-more-msg', cdnProxyT('cdn_proxy_use_ok'), 'ok');
 }
 function dismissCdnCfBanner() {
