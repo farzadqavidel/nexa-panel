@@ -13,7 +13,7 @@ Manage users, usage, routing and panel operations in one place—without maintai
 [![Database](https://img.shields.io/badge/Database-Cloudflare%20D1-f48120?style=flat-square)](https://developers.cloudflare.com/d1/)
 [![Languages](https://img.shields.io/badge/Languages-English%20%2F%20فارسی-3c9?style=flat-square)](docs/index.html)
 
-**[🚀 Deploy NEXA](https://www.irnexateam.workers.dev/deploy/)** · [📚 Documentation](https://irnexateam.github.io/nexa-panel/) · [🌐 Website](https://www.irnexateam.workers.dev/) · [💻 GitHub](https://github.com/irnexateam/nexa-panel)
+**[🚀 Deploy NEXA](https://www.irnexa.workers.dev/deploy/)** · [📚 Documentation](https://irnexateam.github.io/nexa-panel/) · [🌐 Website](https://www.irnexa.workers.dev/) · [💻 GitHub](https://github.com/irnexa/nexa-panel)
 
 [📣 Telegram](https://t.me/irnexateam) · [▶ YouTube](https://www.youtube.com/@irnexateam)
 
@@ -59,7 +59,7 @@ Manage users, usage, routing and panel operations in one place—without maintai
 The official deployment page is the installation method documented for NEXA Panel.
 
 <p align="center">
-  <a href="https://www.irnexateam.workers.dev/deploy/"><strong>👉 Open the NEXA deployment page</strong></a>
+  <a href="https://www.irnexa.workers.dev/deploy/"><strong>👉 Open the NEXA deployment page</strong></a>
 </p>
 
 Follow the prompts to create a Cloudflare API token, enter it in the deployment portal, choose your account and panel name, and monitor deployment progress. The portal provisions the required Cloudflare resources and displays the resulting access details.
@@ -70,7 +70,7 @@ Follow the prompts to create a Cloudflare API token, enter it in the deployment 
 
 The bilingual guide covers deployment and the panel’s major areas, from user management and routing to logs, backups and security settings.
 
--  [browse the documentation on GitHub](https://github.com/irnexateam/nexa-panel/tree/main/docs).
+-  [browse the documentation on GitHub](https://github.com/irnexa/nexa-panel/tree/main/docs).
 - Switch between English and Persian with the **EN/FA** control.
 - Follow [Telegram](https://t.me/irnexateam) and [YouTube](https://www.youtube.com/@irnexateam) for updates and guides.
 
