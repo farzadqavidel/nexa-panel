@@ -49,10 +49,14 @@
 ## تصاویر پنل
 
 <p align="center">
-  <img src="picture/1.png" width="49%" alt="داشبورد پنل نکسا با جزئیات خصوصی پوشانده‌شده">
-  &nbsp;
-  <img src="picture/2.png" width="49%" alt="مدیریت کاربران پنل نکسا با اطلاعات هویتی محوشده">
+  <img src="picture/dashboard.png" width="100%" alt="داشبورد پنل نکسا با جزئیات خصوصی پوشانده‌شده">
 </p>
+<p align="center"><em>داشبورد — مصرف درخواست، پیوند اشتراک و کنترل‌های سریع</em></p>
+
+<p align="center">
+  <img src="picture/usermanagment.png" width="100%" alt="مدیریت کاربران پنل نکسا با اطلاعات هویتی محوشده">
+</p>
+<p align="center"><em>مدیریت کاربران — سرویس‌ها، سهمیه، پورت و پیوند اشتراک</em></p>
 
 ## راه‌اندازی
 

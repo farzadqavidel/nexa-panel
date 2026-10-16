@@ -49,10 +49,14 @@ Manage users, usage, routing and panel operations in one place—without maintai
 ## Screenshots
 
 <p align="center">
-  <img src="picture/1.png" width="49%" alt="NEXA Panel dashboard with private details obscured">
-  &nbsp;
-  <img src="picture/2.png" width="49%" alt="NEXA Panel user management with identifying details obscured">
+  <img src="picture/dashboard.png" width="100%" alt="NEXA Panel dashboard with private details obscured">
 </p>
+<p align="center"><em>Dashboard — request usage, subscription link and quick controls</em></p>
+
+<p align="center">
+  <img src="picture/usermanagment.png" width="100%" alt="NEXA Panel user management with identifying details obscured">
+</p>
+<p align="center"><em>User management — services, quotas, ports and subscription links</em></p>
 
 ## Deployment
 
