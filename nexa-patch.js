@@ -252,6 +252,52 @@ function adminPassword(env) {
   return typeof env.ADMIN === "string" ? env.ADMIN : "";
 }
 
+async function resolveAdminPassword(env) {
+  const envPw = adminPassword(env);
+  try {
+    const dbPw = await getSetting(env, "ADMIN");
+    const syncedEnv = await getSetting(env, "ADMIN_ENV_SYNCED");
+    if (envPw && (!dbPw || envPw !== syncedEnv)) {
+      return envPw;
+    }
+    if (dbPw) return dbPw;
+  } catch {}
+  return envPw;
+}
+
+async function syncAdminBindingToWorker(req, env, password) {
+  let selfName = typeof env.WORKER_NAME === "string" && env.WORKER_NAME ? env.WORKER_NAME.trim() : null;
+  let host = "";
+  try { if (req && req.url) host = new URL(req.url).hostname; } catch {}
+  if (!selfName && host) {
+    const mm = host.match(/^([a-z0-9-]+)\.[a-z0-9-]+\.workers\.dev$/i);
+    if (mm) selfName = mm[1].toLowerCase();
+  }
+  const { results } = await env.DB.prepare("SELECT * FROM profiles ORDER BY pos, created_at, name").all();
+  const errs = [];
+  for (const p of (results || [])) {
+    try {
+      let targetName = selfName;
+      if (!targetName && host) {
+        try {
+          const doms = await fetchWorkerDomainsStrict(p.token, p.account_id, { hostname: host });
+          const hit = (doms || []).find(d => d && d.service && String(d.hostname || "").toLowerCase() === host.toLowerCase());
+          if (hit) targetName = hit.service;
+        } catch {}
+      }
+      if (!targetName) continue;
+      if (!(await workerExists(p.token, p.account_id, targetName))) continue;
+      const defs = bindingsToMetadata(await fetchBindings(p.token, p.account_id, targetName))
+        .filter(b => b.name !== "ADMIN");
+      defs.push({ type: "plain_text", name: "ADMIN", text: password });
+      await applyBindings(p.token, p.account_id, targetName, defs);
+      await setSetting(env, "ADMIN_ENV_SYNCED", adminPassword(env));
+      return { ok: true, synced: true, worker: targetName, account: p.name, errs };
+    } catch (e) { errs.push(`${p.name}: ${e.message}`); }
+  }
+  return { ok: false, synced: false, worker: selfName, errs };
+}
+
 async function requireSession(req, env) {
   const tok = getCookie(req, COOKIE);
   if (!tok) throw new ApiError("unauthorized", 401);
@@ -2335,12 +2381,47 @@ function route(method, pattern, handler, opts = {}) {
 route("GET", "/api/status", async (m, req, env) => {
   let d1 = true, d1Error = null;
   try { await ensureSchema(env); } catch (e) { d1 = false; d1Error = e.message || String(e); }
-  const admin_set = adminPassword(env).length > 0;
+  const realPw = d1 ? await resolveAdminPassword(env) : adminPassword(env);
+  const admin_set = realPw.length > 0;
   let authed = false;
   if (d1) {
     try { await requireSession(req, env); authed = true; } catch {}
   }
   return json({ d1, d1Error, admin_set, setup: admin_set, authed });
+}, { public: true });
+
+route("POST", "/api/setup-admin", async (m, req, env) => {
+  await ensureSchema(env);
+  const existingPw = await resolveAdminPassword(env);
+  if (existingPw.length > 0) {
+    throw new ApiError("پسورد ADMIN قبلاً تنظیم شده است. لطفاً از فرم ورود استفاده کنید.", 400);
+  }
+  const body = await req.json().catch(() => ({}));
+  const pw = String(body.password || "");
+  if (pw.length < 6) throw new ApiError("رمز عبور باید حداقل ۶ کاراکتر باشد", 400);
+
+  await setSetting(env, "ADMIN", pw);
+  await setSetting(env, "ADMIN_ENV_SYNCED", adminPassword(env));
+  await delSetting(env, "login_fails");
+  await delSetting(env, "lock_until");
+
+  let syncRes = { synced: false, worker: null, account: null };
+  try { syncRes = await syncAdminBindingToWorker(req, env, pw); } catch {}
+
+  const tok = randomToken(32);
+  await env.DB.prepare("DELETE FROM sessions WHERE expires_at <= ?").bind(Math.floor(Date.now() / 1000)).run();
+  await env.DB.prepare("INSERT INTO sessions (token, expires_at) VALUES (?, ?)")
+    .bind(tok, Math.floor(Date.now() / 1000) + SESSION_TTL).run();
+
+  return json({
+    ok: true,
+    synced: !!syncRes.synced,
+    worker: syncRes.worker || null,
+    account: syncRes.account || null,
+    message: syncRes.synced
+      ? `رمز عبور در متغیر محیطی ADMIN روی ورکر «${syncRes.worker}» تنظیم و فعال شد ✓`
+      : "رمز عبور ADMIN تنظیم و فعال شد ✓ (پس از افزودن اکانت کلادفلر، روی متغیر محیطی ورکر نیز همگام‌سازی می‌شود)",
+  }, 200, { "Set-Cookie": sessionCookie(tok) });
 }, { public: true });
 
 route("POST", "/api/login", async (m, req, env) => {
@@ -2349,7 +2430,7 @@ route("POST", "/api/login", async (m, req, env) => {
   if (lockUntil > Date.now()) throw new ApiError(`تلاش زیاد. تا ${Math.ceil((lockUntil - Date.now()) / 60000)} دقیقه دیگر صبر کنید.`, 429);
   const body = await req.json();
   const pw = String(body.password || "");
-  const realPw = adminPassword(env);
+  const realPw = await resolveAdminPassword(env);
   if (!realPw || pw !== realPw) {
     const fails = parseInt((await getSetting(env, "login_fails")) || "0", 10) + 1;
     await setSetting(env, "login_fails", String(fails));
@@ -2376,36 +2457,26 @@ route("POST", "/api/logout", async (m, req, env) => {
 
 route("POST", "/api/admin-password", async (m, req, env) => {
   const body = await req.json();
-  const realPw = adminPassword(env);
+  const realPw = await resolveAdminPassword(env);
   if (!realPw) throw new ApiError("متغیر محیطی ADMIN تنظیم نشده است", 400);
   if (String(body.current || "") !== realPw) throw new ApiError("رمز فعلی اشتباه است", 401);
   const next = String(body.next || "");
   if (next.length < 6) throw new ApiError("رمز جدید باید حداقل ۶ کاراکتر باشد", 400);
 
-  let selfName = typeof env.WORKER_NAME === "string" && env.WORKER_NAME ? env.WORKER_NAME : null;
-  if (!selfName) {
-    const host = new URL(req.url).hostname;
-    const mm = host.match(/^([a-z0-9-]+)\.[a-z0-9-]+\.workers\.dev$/i);
-    if (mm) selfName = mm[1].toLowerCase();
-  }
-  if (!selfName) throw new ApiError("نام این ورکر قابل تشخیص نبود — از آدرس workers.dev وارد شوید، متغیر WORKER_NAME را تنظیم کنید، یا ADMIN را مستقیم از داشبورد تغییر دهید.", 400);
+  await setSetting(env, "ADMIN", next);
+  await setSetting(env, "ADMIN_ENV_SYNCED", adminPassword(env));
 
-  const { results } = await env.DB.prepare("SELECT * FROM profiles ORDER BY pos, created_at, name").all();
-  const errs = [];
-  for (const p of (results || [])) {
-    try {
-      if (!(await workerExists(p.token, p.account_id, selfName))) continue;
-      const defs = bindingsToMetadata(await fetchBindings(p.token, p.account_id, selfName))
-        .filter(b => b.name !== "ADMIN");
-      defs.push({ type: "plain_text", name: "ADMIN", text: next });
-      await applyBindings(p.token, p.account_id, selfName, defs);
-      return json({
-        ok: true, worker: selfName, account: p.name,
-        message: `متغیر ADMIN روی ورکر «${selfName}» به‌صورت Text به‌روزرسانی شد؛ چند لحظه تا اعمال کامل زمان می‌برد.`,
-      });
-    } catch (e) { errs.push(`${p.name}: ${e.message}`); }
+  const syncRes = await syncAdminBindingToWorker(req, env, next);
+  if (syncRes.synced) {
+    return json({
+      ok: true, worker: syncRes.worker, account: syncRes.account,
+      message: `متغیر ADMIN روی ورکر «${syncRes.worker}» به‌صورت Text به‌روزرسانی شد؛ چند لحظه تا اعمال کامل زمان می‌برد.`,
+    });
   }
-  throw new ApiError(`ورکر «${selfName}» در اکانت‌های ذخیره‌شده پیدا نشد${errs.length ? " — " + errs.join(" | ") : ""}. متغیر ADMIN را از داشبورد Cloudflare دستی تغییر دهید.`, 404);
+  return json({
+    ok: true, worker: syncRes.worker || null, account: null,
+    message: "رمز عبور ADMIN با موفقیت به‌روزرسانی شد (به‌محض اتصال اکانت کلادفلر این ورکر، روی متغیر محیطی ورکر نیز ثبت می‌شود).",
+  });
 });
 
 route("GET", "/api/profiles", async (m, req, env) => {
@@ -2432,6 +2503,12 @@ route("POST", "/api/profiles", async (m, req, env) => {
 
   let pos = exists ? exists.pos : (((await env.DB.prepare("SELECT COALESCE(MAX(pos), -1) AS m FROM profiles").first()) || {}).m + 1);
   await env.DB.prepare(`INSERT OR REPLACE INTO profiles (name, token, account_id, nexa_workers, pos) VALUES (?, ?, ?, '[]', ?)`).bind(name, token, accountId, pos).run();
+  if (!adminPassword(env)) {
+    try {
+      const savedPw = await getSetting(env, "ADMIN");
+      if (savedPw) await syncAdminBindingToWorker(req, env, savedPw);
+    } catch {}
+  }
   const acc = accounts.find(a => a.id === accountId);
   return json({ ok: true, profile: { name, account_id: accountId, account_name: acc ? acc.name : null } });
 });
@@ -2472,6 +2549,12 @@ route("POST", "/api/profiles/bulk", async (m, req, env) => {
       item.message = `ذخیره شد — ${acc ? acc.name : accountId}`;
     } catch (err) { item.message = err.message; }
     results.push(item);
+  }
+  if (!adminPassword(env) && results.some(r => r.ok)) {
+    try {
+      const savedPw = await getSetting(env, "ADMIN");
+      if (savedPw) await syncAdminBindingToWorker(req, env, savedPw);
+    } catch {}
   }
   return json({ ok: true, results });
 });
@@ -3525,7 +3608,7 @@ route("GET", "/api/backup", async (m, req, env, url) => {
   const scripts = (await env.DB.prepare("SELECT * FROM scripts ORDER BY key").all()).results || [];
   const settings = Object.create(null);
   for (const r of (await env.DB.prepare("SELECT * FROM settings").all()).results || []) {
-    if (!["login_fails", "lock_until"].includes(r.key) && !r.key.startsWith('pages_rebuild_lock:')) settings[r.key] = r.value;
+    if (!["login_fails", "lock_until", "ADMIN", "ADMIN_ENV_SYNCED"].includes(r.key) && !r.key.startsWith('pages_rebuild_lock:')) settings[r.key] = r.value;
   }
   const tables = Object.create(null);
   for (const name of Object.keys(PANEL_BACKUP_TABLES)) tables[name] = (await env.DB.prepare(`SELECT * FROM ${name}`).all()).results || [];
@@ -3574,7 +3657,7 @@ route("POST", "/api/backup/restore", async (m, req, env) => {
   if (data.settings !== undefined) {
     if (!data.settings || typeof data.settings !== 'object' || Array.isArray(data.settings)) throw new ApiError('تنظیمات بکاپ نامعتبر است.', 400);
     for (const [key, value] of Object.entries(data.settings)) {
-      if (!key || ['login_fails','lock_until'].includes(key) || key.startsWith('pages_rebuild_lock:')) continue;
+      if (!key || ['login_fails','lock_until','ADMIN','ADMIN_ENV_SYNCED'].includes(key) || key.startsWith('pages_rebuild_lock:')) continue;
       if (typeof value !== 'string') throw new ApiError('مقادیر تنظیمات بکاپ باید متن باشند.', 400);
       stmts.push(env.DB.prepare('INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)').bind(key,value)); setCount++;
     }
@@ -3597,6 +3680,12 @@ route("POST", "/api/backup/restore", async (m, req, env) => {
     }
   }
   await env.DB.batch(stmts);
+  if (!adminPassword(env) && pCount > 0) {
+    try {
+      const savedPw = await getSetting(env, "ADMIN");
+      if (savedPw) await syncAdminBindingToWorker(req, env, savedPw);
+    } catch {}
+  }
   return json({ ok: true, profiles:pCount, scripts:sCount, settings:setCount, tables:counts });
 });
 
@@ -4132,26 +4221,241 @@ tbody tr:hover td { background: var(--surface-2); }
 }
 
 #auth {
+  position: relative;
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex; align-items: center; justify-content: center;
-  padding: 24px;
+  padding: 28px 18px;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    radial-gradient(650px circle at 18% 15%, rgba(56, 227, 49, 0.13), transparent 60%),
+    radial-gradient(560px circle at 85% 85%, rgba(34, 194, 47, 0.10), transparent 60%),
+    var(--bg);
 }
-.auth-wrap { width: 100%; max-width: 420px; }
+#auth::before {
+  content: "";
+  position: absolute; inset: 0; z-index: -2;
+  background-image:
+    linear-gradient(to right, rgba(56, 227, 49, 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(56, 227, 49, 0.06) 1px, transparent 1px);
+  background-size: 36px 36px;
+  mask-image: radial-gradient(ellipse at center, rgba(0,0,0,0.85) 20%, transparent 75%);
+  -webkit-mask-image: radial-gradient(ellipse at center, rgba(0,0,0,0.85) 20%, transparent 75%);
+  pointer-events: none;
+}
+#auth::after {
+  content: "";
+  position: absolute;
+  width: 360px; height: 360px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(56, 227, 49, 0.18) 0%, transparent 70%);
+  filter: blur(45px);
+  z-index: -1;
+  pointer-events: none;
+  animation: auth-pulse 7s ease-in-out infinite alternate;
+}
+@keyframes auth-pulse {
+  0% { transform: translate(-18%, -14%) scale(0.95); opacity: 0.7; }
+  100% { transform: translate(18%, 14%) scale(1.1); opacity: 1; }
+}
+@keyframes auth-enter {
+  from { opacity: 0; transform: translateY(14px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.auth-wrap {
+  width: 100%; max-width: 450px;
+  position: relative; z-index: 1;
+  animation: auth-enter 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
 .auth-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  box-shadow: var(--shadow-md);
-  padding: 32px 30px 28px;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+  border: 1px solid var(--border-strong);
+  border-radius: 24px;
+  box-shadow:
+    0 24px 60px rgba(0, 0, 0, 0.38),
+    0 0 0 1px rgba(56, 227, 49, 0.07) inset,
+    0 1px 0 rgba(255, 255, 255, 0.06) inset;
+  padding: 34px 30px 26px;
+}
+:root:not([data-theme="dark"]) .auth-card {
+  background: linear-gradient(180deg, #FFFFFF 0%, #F6FBF7 100%);
+  box-shadow:
+    0 20px 50px rgba(10, 42, 18, 0.10),
+    0 0 0 1px rgba(10, 138, 30, 0.08) inset;
+}
+.auth-card::before {
+  content: "";
+  position: absolute; top: 0; inset-inline: 0; height: 3px;
+  background: linear-gradient(90deg, transparent 5%, var(--primary) 35%, #80D99A 65%, transparent 95%);
+  opacity: 0.95;
+}
+.auth-head {
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  margin-bottom: 20px;
+}
+.auth-logo-ring {
+  position: relative;
+  width: 68px; height: 68px;
+  border-radius: 20px;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, var(--primary-soft), var(--surface-3));
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 10px 28px rgba(56, 227, 49, 0.18), 0 0 0 6px rgba(56, 227, 49, 0.05);
+  margin-bottom: 14px;
+}
+.auth-logo-ring .brand-logo {
+  width: 48px; height: 48px; border-radius: 13px;
+  box-shadow: none;
 }
 .auth-logo {
-  display: flex; align-items: center; gap: 10px;
-  font-size: 18px; font-weight: 800;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  font-size: 22px; font-weight: 900; letter-spacing: -0.3px;
+  color: var(--text);
 }
 .auth-logo .ico { color: var(--primary); }
-.auth-sub { color: var(--muted); font-size: 13px; margin: 6px 0 24px; }
-.auth-card form { display: flex; flex-direction: column; gap: 16px; }
-.auth-card .btn.primary { width: 100%; height: 42px; font-size: 14px; }
+.auth-sub {
+  color: var(--muted); font-size: 13px; margin: 5px 0 0;
+  line-height: 1.6;
+}
+.auth-status-bar {
+  display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  margin-bottom: 18px;
+}
+.d1-pill.warn { background: var(--warn-soft); color: var(--warn); }
+.dot.pulse {
+  box-shadow: 0 0 0 0 currentColor;
+  animation: dot-pulse 2s infinite;
+}
+@keyframes dot-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(56, 227, 49, 0.55); }
+  70% { box-shadow: 0 0 0 6px rgba(56, 227, 49, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(56, 227, 49, 0); }
+}
+.auth-setup-banner {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 14px 15px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--warn-soft), var(--primary-soft));
+  border: 1px solid var(--border-strong);
+  margin-bottom: 18px;
+  text-align: right;
+}
+.auth-setup-banner .setup-ico {
+  width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--surface); color: var(--primary);
+  border: 1px solid var(--border);
+}
+.auth-setup-title {
+  font-weight: 800; font-size: 13.5px; color: var(--text);
+  margin-bottom: 3px;
+}
+.auth-setup-desc {
+  font-size: 12.2px; color: var(--muted); line-height: 1.75;
+}
+.auth-card form { display: flex; flex-direction: column; gap: 14px; }
+.auth-field-lbl {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12.5px; font-weight: 700; color: var(--text);
+  margin-bottom: 6px;
+}
+.auth-input-wrap {
+  position: relative; display: flex; align-items: center;
+}
+.auth-input-wrap input {
+  margin-top: 0 !important;
+  height: 46px;
+  padding-inline-start: 40px;
+  padding-inline-end: 42px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  font-size: 14px;
+  transition: border-color 0.18s, box-shadow 0.18s, background-color 0.18s;
+}
+.auth-input-wrap input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 4px var(--primary-soft);
+}
+.auth-field-ico {
+  position: absolute; inset-inline-start: 13px;
+  color: var(--muted); pointer-events: none;
+  display: inline-flex; align-items: center;
+  transition: color 0.18s;
+}
+.auth-input-wrap:focus-within .auth-field-ico { color: var(--primary); }
+.auth-eye-btn {
+  position: absolute; inset-inline-end: 7px;
+  width: 32px; height: 32px; border-radius: 8px;
+  border: 0; background: transparent; color: var(--muted);
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer; padding: 0;
+  transition: color 0.15s, background-color 0.15s;
+}
+.auth-eye-btn:hover { color: var(--text); background: var(--surface-3); }
+.pw-meter {
+  display: flex; flex-direction: column; gap: 6px;
+  margin-top: 6px;
+}
+.pw-bars {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px;
+}
+.pw-bar {
+  height: 4px; border-radius: 999px;
+  background: var(--border-strong);
+  transition: background-color 0.2s ease;
+}
+.pw-bar.s1 { background: var(--danger); }
+.pw-bar.s2 { background: var(--warn); }
+.pw-bar.s3 { background: #4AD66D; }
+.pw-bar.s4 { background: var(--primary); }
+.pw-meter-lbl {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 11.5px; color: var(--muted);
+}
+.auth-card .btn.primary {
+  width: 100%; height: 46px; font-size: 14.5px; font-weight: 800;
+  border-radius: 12px;
+  box-shadow: 0 8px 22px rgba(56, 227, 49, 0.25);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+}
+.auth-card .btn.primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 28px rgba(56, 227, 49, 0.34);
+}
+.auth-card .btn.primary:active:not(:disabled) { transform: translateY(0); }
+.auth-foot {
+  display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 20px; padding-top: 16px;
+  border-top: 1px dashed var(--border);
+}
+.auth-link {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  height: 36px; padding: 0 13px;
+  border-radius: 11px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  color: var(--muted);
+  font-size: 12px; font-weight: 700;
+  text-decoration: none;
+  transition: transform 0.16s ease, border-color 0.16s ease, color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease;
+}
+.auth-link .ico { color: var(--primary); transition: transform 0.16s ease, color 0.16s ease; }
+.auth-link:hover {
+  color: var(--text);
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(56, 227, 49, 0.16);
+}
+.auth-link:hover .ico { transform: scale(1.1); }
 
 #main { display: flex; min-height: 100vh; }
 #side {
@@ -4368,6 +4672,298 @@ td { overflow-wrap: anywhere; }
 .bk-row .bk-name { font-family: ui-monospace, Consolas, "Courier New", monospace; direction: ltr; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
 .bk-row .bk-acc { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .bk-row .bk-st { margin-inline-start: auto; }
+
+.stg-hero {
+  position: relative; overflow: hidden;
+  display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap;
+  padding: 22px 24px;
+  border-radius: 18px;
+  background:
+    radial-gradient(420px circle at 10% 20%, rgba(56, 227, 49, 0.12), transparent 65%),
+    linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+  border: 1px solid var(--border-strong);
+}
+.stg-hero-main { display: flex; align-items: center; gap: 15px; min-width: 0; }
+.stg-hero-ico {
+  width: 50px; height: 50px; border-radius: 14px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--primary-soft); color: var(--primary);
+  border: 1px solid rgba(56, 227, 49, 0.25);
+  box-shadow: 0 8px 20px rgba(56, 227, 49, 0.14);
+}
+.stg-hero-title { font-size: 17px; font-weight: 800; color: var(--text); margin-bottom: 3px; }
+.stg-hero-sub { font-size: 12.8px; color: var(--muted); line-height: 1.65; }
+.stg-pills { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.stg-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  align-items: stretch;
+}
+@media (max-width: 960px) {
+  .stg-grid { grid-template-columns: 1fr; }
+}
+.stg-card {
+  display: flex; flex-direction: column; justify-content: space-between; gap: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 22px 24px;
+  box-shadow: var(--shadow-sm);
+  position: relative; overflow: hidden;
+}
+.stg-card-top { display: flex; flex-direction: column; gap: 14px; }
+.stg-head {
+  display: flex; align-items: flex-start; gap: 13px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.stg-ico {
+  width: 42px; height: 42px; border-radius: 12px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--primary-soft); color: var(--primary);
+  border: 1px solid rgba(56, 227, 49, 0.20);
+}
+.stg-ico.warn { background: var(--warn-soft); color: var(--warn); border-color: rgba(232, 199, 122, 0.25); }
+.stg-ico.danger { background: var(--danger-soft); color: var(--danger); border-color: rgba(242, 116, 116, 0.25); }
+.stg-head-txt { flex: 1; min-width: 0; }
+.stg-head-title {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 15px; font-weight: 800; color: var(--text); margin-bottom: 4px;
+}
+.stg-head-desc { font-size: 12.5px; color: var(--muted); line-height: 1.75; }
+
+.stg-info-box {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 13px 15px;
+  border-radius: 13px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 12.5px; color: var(--muted); line-height: 1.75;
+}
+.stg-check-item {
+  display: flex; align-items: flex-start; gap: 9px;
+  font-size: 12.5px; color: var(--text); line-height: 1.65;
+}
+.stg-check-item .ico { color: var(--primary); margin-top: 3px; }
+.stg-check-item span b { font-weight: 700; }
+
+.stg-actions-grid {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;
+}
+@media (max-width: 560px) {
+  .stg-actions-grid { grid-template-columns: 1fr; }
+}
+.stg-tile {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px;
+  padding: 14px 10px;
+  border-radius: 13px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 12.5px; font-weight: 700;
+  text-align: center; cursor: pointer; text-decoration: none;
+  transition: transform 0.15s ease, border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+.stg-tile .ico { color: var(--primary); transition: transform 0.15s ease; }
+.stg-tile .stg-tile-sub { font-size: 11px; font-weight: 500; color: var(--muted); }
+.stg-tile:hover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(56, 227, 49, 0.12);
+}
+.stg-tile:hover .ico { transform: scale(1.1); }
+.stg-tile.primary-tile {
+  background: var(--primary-soft);
+  border-color: rgba(56, 227, 49, 0.35);
+}
+
+.stg-danger-card {
+  background: var(--surface);
+  border: 1px solid rgba(242, 116, 116, 0.28);
+  border-radius: 18px;
+  padding: 22px 24px;
+}
+.stg-danger-list {
+  display: flex; flex-direction: column; gap: 12px; margin-top: 14px;
+}
+.stg-danger-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  padding: 14px 16px;
+  border-radius: 13px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.stg-danger-row-info { flex: 1; min-width: 220px; }
+.stg-danger-row-title { font-size: 13.5px; font-weight: 800; color: var(--text); margin-bottom: 3px; display: flex; align-items: center; gap: 7px; }
+.stg-danger-row-desc { font-size: 12.2px; color: var(--muted); line-height: 1.7; }
+
+.rst-item {
+  display: flex; align-items: flex-start; gap: 11px;
+  padding: 11px 13px;
+  border-radius: 11px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+.rst-item:hover { border-color: var(--border-strong); background: var(--surface-3); }
+.rst-item input { margin-top: 3px; width: 16px; height: 16px; accent-color: var(--danger); flex-shrink: 0; }
+.rst-item-title { font-size: 13px; font-weight: 700; color: var(--text); }
+.rst-item-desc { font-size: 11.8px; color: var(--muted); line-height: 1.6; margin-top: 2px; }
+
+.nav-sec {
+  font-size: 10.5px; font-weight: 800; color: var(--faint);
+  padding: 10px 12px 4px; letter-spacing: 0.2px;
+  user-select: none;
+}
+.nav-item { position: relative; }
+.nav-item.active::before {
+  content: "";
+  position: absolute; inset-inline-start: 0; top: 8px; bottom: 8px; width: 3.5px;
+  border-radius: 99px; background: var(--primary);
+  box-shadow: 0 0 10px var(--primary);
+}
+
+.dsh-top-grid {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 18px;
+  align-items: stretch;
+}
+@media (max-width: 960px) {
+  .dsh-top-grid { grid-template-columns: 1fr; }
+}
+.dsh-acc-card, .dsh-usage-card {
+  position: relative; overflow: hidden;
+  display: flex; flex-direction: column; justify-content: space-between; gap: 16px;
+  padding: 22px 24px;
+  border-radius: 18px;
+  background:
+    radial-gradient(380px circle at 8% 12%, rgba(56, 227, 49, 0.10), transparent 65%),
+    linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-sm);
+}
+.dsh-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+@media (max-width: 560px) {
+  .dsh-meta-grid { grid-template-columns: 1fr; }
+}
+.dsh-meta-item {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 11px 13px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  min-width: 0;
+}
+.dsh-meta-lbl { font-size: 11.5px; color: var(--muted); font-weight: 600; display: flex; align-items: center; gap: 5px; }
+.dsh-meta-val {
+  font-size: 13px; font-weight: 800; color: var(--text);
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  overflow-wrap: anywhere;
+}
+.dsh-usage-big {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  direction: ltr;
+}
+.dsh-usage-num {
+  font-size: 28px; font-weight: 900; color: var(--text);
+  font-variant-numeric: tabular-nums; letter-spacing: -0.5px;
+}
+.dsh-usage-num span { font-size: 14px; font-weight: 600; color: var(--muted); }
+.dsh-usage-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+  font-size: 12px; color: var(--muted);
+  padding-top: 10px; border-top: 1px dashed var(--border);
+}
+
+.dsh-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+@media (max-width: 1060px) {
+  .dsh-stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 540px) {
+  .dsh-stats-grid { grid-template-columns: 1fr; }
+}
+.dsh-stat-card {
+  position: relative; overflow: hidden;
+  display: flex; flex-direction: column; justify-content: space-between; gap: 12px;
+  padding: 18px 20px;
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
+}
+.dsh-stat-card:hover {
+  transform: translateY(-3px);
+  border-color: var(--primary);
+  background: linear-gradient(180deg, var(--surface) 0%, var(--primary-soft) 190%);
+  box-shadow: 0 12px 26px rgba(56, 227, 49, 0.11);
+}
+.dsh-stat-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.dsh-stat-ico {
+  width: 40px; height: 40px; border-radius: 11px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--primary-soft); color: var(--primary);
+  border: 1px solid rgba(56, 227, 49, 0.20);
+}
+.dsh-stat-num {
+  font-size: 28px; font-weight: 900; line-height: 1.1; color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.dsh-stat-title { font-size: 14px; font-weight: 800; color: var(--text); margin-bottom: 2px; }
+.dsh-stat-desc { font-size: 11.8px; color: var(--muted); line-height: 1.6; }
+
+.dsh-actions-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+@media (max-width: 780px) {
+  .dsh-actions-grid { grid-template-columns: 1fr; }
+}
+.dsh-action-card {
+  display: flex; align-items: flex-start; gap: 14px;
+  padding: 18px 20px;
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  cursor: pointer; text-align: right;
+  transition: transform 0.16s ease, border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease;
+}
+.dsh-action-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--primary);
+  background: var(--surface-2);
+  box-shadow: 0 10px 24px rgba(56, 227, 49, 0.10);
+}
+.dsh-action-card.featured {
+  background: linear-gradient(135deg, var(--primary-soft), var(--surface));
+  border-color: rgba(56, 227, 49, 0.35);
+}
+.dsh-action-ico {
+  width: 44px; height: 44px; border-radius: 12px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--primary-soft); color: var(--primary);
+  border: 1px solid rgba(56, 227, 49, 0.22);
+}
+.dsh-action-body { flex: 1; min-width: 0; }
+.dsh-action-title {
+  font-size: 14.5px; font-weight: 800; color: var(--text); margin-bottom: 4px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.dsh-action-desc { font-size: 12.2px; color: var(--muted); line-height: 1.7; }
 `;
 
 function clientApp() {
@@ -4425,6 +5021,7 @@ function clientApp() {
     hammer: '<path d="m15 12-8.373 8.373a1 1 0 1 1-3-3L12 9"/><path d="m18 15 4-4"/><path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172V7l-2.26-2.26a6 6 0 0 0-4.202-1.756L9 2.96l.92.82A6.18 6.18 0 0 1 12 8.4V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/>',
     building: '<rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 22v-4h6v4"/><path d="M8 6h.01"/><path d="M16 6h.01"/><path d="M12 6h.01"/><path d="M8 10h.01"/><path d="M16 10h.01"/><path d="M12 10h.01"/><path d="M8 14h.01"/><path d="M16 14h.01"/><path d="M12 14h.01"/>',
     eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+    eyeOff: '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>',
     check: '<polyline points="20 6 9 17 4 12"/>',
     save: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>',
     shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
@@ -4440,6 +5037,9 @@ function clientApp() {
     menu: '<line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>',
     sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>',
     moon: '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
+    github: '<path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/>',
+    youtube: '<path d="M2.5 17a24.12 24.12 0 0 1 0-10 2 2 0 0 1 1.4-1.4 49.56 49.56 0 0 1 16.2 0A2 2 0 0 1 21.5 7a24.12 24.12 0 0 1 0 10 2 2 0 0 1-1.4 1.4 49.55 49.55 0 0 1-16.2 0A2 2 0 0 1 2.5 17"/><path d="m10 15 5-3-5-3v6Z"/>',
+    telegram: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
   };
 
   function icon(name, size = 16) {
@@ -4618,11 +5218,80 @@ function clientApp() {
     const b = $("#auth-body");
     b.innerHTML = "";
     b.append(
-      d1Pill(false),
-      el("div", { class: "empty" }, ic("alert", 22), el("div", { style: "margin:4px 0" }, "خطا در ارتباط با ورکر"),
-        el("div", { class: "small dim" }, msg || "")),
-      el("div", { class: "btn-row", style: "justify-content:center" },
-        el("button", { class: "btn sm", onclick: () => location.reload() }, ic("refresh", 14), " تلاش مجدد")));
+      el("div", { class: "auth-status-bar" }, d1Pill(false)),
+      el("div", { class: "empty", style: "padding:18px 12px" },
+        ic("alert", 26),
+        el("div", { style: "margin:8px 0 4px;font-weight:800;color:var(--text)" }, "خطا در ارتباط با ورکر"),
+        el("div", { class: "small dim" }, msg || "امکان برقراری ارتباط با سرور وجود ندارد.")),
+      el("div", { class: "btn-row", style: "justify-content:center;margin-top:10px" },
+        el("button", { class: "btn primary sm", onclick: () => location.reload() }, ic("refresh", 14), " تلاش مجدد")),
+      authLinksFooter());
+  }
+
+  function makeAuthPasswordInput(placeholder, autoComplete = "current-password", leadingIcon = "lock") {
+    const inp = el("input", {
+      type: "password",
+      placeholder,
+      autocomplete: autoComplete,
+      dir: "ltr",
+      style: "text-align:right",
+    });
+    const updateDir = () => {
+      const hasVal = inp.value.length > 0;
+      inp.style.direction = hasVal ? "ltr" : "rtl";
+      inp.style.textAlign = hasVal ? "left" : "right";
+    };
+    inp.addEventListener("input", updateDir);
+    const eyeBtn = el("button", {
+      type: "button",
+      class: "auth-eye-btn",
+      title: "نمایش / مخفی کردن رمز",
+      tabindex: "-1",
+      onclick: () => {
+        const show = inp.type === "password";
+        inp.type = show ? "text" : "password";
+        eyeBtn.innerHTML = icon(show ? "eyeOff" : "eye", 16);
+        inp.focus();
+      },
+    }, ic("eye", 16));
+    const wrap = el("div", { class: "auth-input-wrap" },
+      el("span", { class: "auth-field-ico" }, ic(leadingIcon, 17)),
+      inp,
+      eyeBtn
+    );
+    return { inp, wrap };
+  }
+
+  function authLinksFooter() {
+    return el("div", { class: "auth-foot" },
+      el("a", {
+        class: "auth-link",
+        href: "http://www.irnexa.workers.dev/",
+        target: "_blank",
+        rel: "noopener noreferrer",
+        title: "وب‌سایت IRNEXA",
+      }, ic("globe", 16), el("span", null, "سایت")),
+      el("a", {
+        class: "auth-link",
+        href: "https://github.com/irnexa",
+        target: "_blank",
+        rel: "noopener noreferrer",
+        title: "گیت‌هاب IRNEXA",
+      }, ic("github", 16), el("span", null, "گیت‌هاب")),
+      el("a", {
+        class: "auth-link",
+        href: "https://www.youtube.com/@irnexateam",
+        target: "_blank",
+        rel: "noopener noreferrer",
+        title: "یوتیوب IRNEXA",
+      }, ic("youtube", 16), el("span", null, "یوتیوب")),
+      el("a", {
+        class: "auth-link",
+        href: "https://t.me/irnexateam",
+        target: "_blank",
+        rel: "noopener noreferrer",
+        title: "تلگرام IRNEXA",
+      }, ic("telegram", 16), el("span", null, "تلگرام")));
   }
 
   async function renderAuthScreen(st) {
@@ -4631,58 +5300,158 @@ function clientApp() {
 
     if (!st.d1) {
       b.append(
-        d1Pill(false),
-        el("div", { style: "font-weight:700;margin:6px 0 10px" }, "دیتابیس D1 به این ورکر متصل نیست"),
-        el("div", { class: "auth-hint", style: "text-align:right;line-height:2.2" },
-          "این پنل برای ذخیره‌سازی توکن‌ها و تنظیمات به D1 نیاز دارد. برای وصل کردن:",
-          el("br"), "۱. در داشبورد Cloudflare بخش ", el("b", null, "Storage & Databases → D1"), " یک دیتابیس بسازید.",
+        el("div", { class: "auth-status-bar" }, d1Pill(false)),
+        el("div", { class: "auth-setup-banner" },
+          el("div", { class: "setup-ico", style: "color:var(--danger)" }, ic("database", 18)),
+          el("div", null,
+            el("div", { class: "auth-setup-title" }, "دیتابیس D1 به این ورکر متصل نیست"),
+            el("div", { class: "auth-setup-desc" }, "این پنل برای ذخیره‌سازی توکن‌ها و تنظیمات به دیتابیس D1 نیاز دارد."))),
+        el("div", { class: "auth-hint", style: "text-align:right;line-height:2.1;background:var(--surface);padding:12px 14px;border-radius:12px;border:1px solid var(--border)" },
+          "۱. در داشبورد Cloudflare بخش ", el("b", null, "Storage & Databases → D1"), " یک دیتابیس بسازید.",
           el("br"), "۲. در تنظیمات ورکر ", el("b", null, "Settings → Bindings → Add"), " یک binding از نوع ", el("b", null, "D1 database"), " اضافه کنید.",
-          el("br"), "۳. ", el("b", null, "Variable name"), " باید دقیقاً ", el("code", { style: "color:var(--green);direction:ltr" }, "DB"), " باشد.",
+          el("br"), "۳. ", el("b", null, "Variable name"), " باید دقیقاً ", el("code", { style: "color:var(--primary);direction:ltr" }, "DB"), " باشد.",
           el("br"), "۴. ذخیره کنید و این صفحه را دوباره باز کنید."),
-        st.d1Error ? el("div", { class: "dim small", style: "margin-top:10px" }, st.d1Error) : null,
-        el("div", { class: "btn-row", style: "justify-content:center;margin-top:14px" },
-          el("button", { class: "btn sm", onclick: () => location.reload() }, ic("refresh", 14), " بررسی مجدد")));
+        st.d1Error ? el("div", { class: "dim small", style: "margin-top:10px;text-align:center" }, st.d1Error) : null,
+        el("div", { class: "btn-row", style: "justify-content:center;margin-top:16px" },
+          el("button", { class: "btn primary", onclick: () => location.reload() }, ic("refresh", 15), " بررسی مجدد اتصال")),
+        authLinksFooter());
       return;
     }
 
     if (!st.admin_set) {
+      const f1 = makeAuthPasswordInput("رمز عبور دلخواه (حداقل ۶ کاراکتر)", "new-password", "key");
+      const f2 = makeAuthPasswordInput("تکرار رمز عبور برای اطمینان", "new-password", "lock");
+
+      const bars = [0, 1, 2, 3].map(() => el("div", { class: "pw-bar" }));
+      const strengthText = el("span", null, "حداقل ۶ کاراکتر وارد کنید");
+      const matchHint = el("span", { class: "xs dim" }, "");
+
+      const updateMeter = () => {
+        const v = f1.inp.value;
+        let score = 0;
+        if (v.length >= 6) score++;
+        if (v.length >= 10) score++;
+        if (/[A-Z]/.test(v) && /[a-z]/.test(v) || /\d/.test(v)) score++;
+        if (/[^A-Za-z0-9]/.test(v) && v.length >= 8) score++;
+        const cls = score === 1 ? "s1" : score === 2 ? "s2" : score === 3 ? "s3" : score >= 4 ? "s4" : "";
+        bars.forEach((bar, idx) => {
+          bar.className = "pw-bar" + (idx < score ? " " + cls : "");
+        });
+        const labels = ["حداقل ۶ کاراکتر وارد کنید", "ضعیف", "متوسط", "خوب", "بسیار قوی ✓"];
+        strengthText.textContent = v.length === 0 ? labels[0] : (v.length < 6 ? `کوتاه (${v.length}/۶)` : labels[score]);
+        strengthText.style.color = score >= 3 ? "var(--primary)" : score === 2 ? "var(--warn)" : v.length > 0 ? "var(--danger)" : "var(--muted)";
+
+        if (!f2.inp.value) {
+          matchHint.textContent = "";
+        } else if (f1.inp.value === f2.inp.value) {
+          matchHint.textContent = "تطابق رمزها ✓";
+          matchHint.style.color = "var(--primary)";
+        } else {
+          matchHint.textContent = "عدم تطابق";
+          matchHint.style.color = "var(--danger)";
+        }
+      };
+      f1.inp.addEventListener("input", updateMeter);
+      f2.inp.addEventListener("input", updateMeter);
+
+      const btn = el("button", { class: "btn primary", type: "submit", style: "margin-top:4px" },
+        ic("shield", 16), " تنظیم در متغیر ADMIN و ورود");
+
       b.append(
-        el("span", { class: "d1-pill bad" }, el("span", { class: "dot" }), "متغیر محیطی ADMIN تنظیم نشده"),
-        el("div", { style: "font-weight:700;margin:6px 0 10px" }, "رمز عبور پنل تعیین نشده است"),
-        el("div", { class: "auth-hint", style: "text-align:right;line-height:2.2" },
-          "رمز این پنل به‌صورت متغیر محیطی (Text) روی همین ورکر ذخیره می‌شود — نه در دیتابیس. برای تنظیم:",
-          el("br"), "۱. در داشبورد Cloudflare وارد تنظیمات همین ورکر شوید: ", el("b", null, "Settings → Variables and Secrets"),
-          el("br"), "۲. دکمه ", el("b", null, "Add"), " را بزنید؛ نوع را ", el("b", null, "Text"), " بگذارید (نه Secret).",
-          el("br"), "۳. نام متغیر: ", el("code", { style: "color:var(--green);direction:ltr" }, "ADMIN"),
-          el("br"), "۴. مقدار: رمز دلخواه شما (حداقل ۶ کاراکتر).",
-          el("br"), "۵. ذخیره و ", el("b", null, "Deploy"), " کنید، سپس این صفحه را دوباره باز کنید."),
-        el("div", { class: "btn-row", style: "justify-content:center;margin-top:14px" },
-          el("button", { class: "btn sm", onclick: () => location.reload() }, ic("refresh", 14), " بررسی مجدد")));
+        el("div", { class: "auth-status-bar" },
+          el("span", { class: "d1-pill ok" }, el("span", { class: "dot pulse" }), "D1 متصل"),
+          el("span", { class: "d1-pill warn" }, el("span", { class: "dot" }), "پسورد ADMIN تنظیم نشده")),
+        el("div", { class: "auth-setup-banner" },
+          el("div", { class: "setup-ico" }, ic("sparkles", 18)),
+          el("div", null,
+            el("div", { class: "auth-setup-title" }, "پسورد پنل (متغیر ADMIN) تنظیم نشده است"),
+            el("div", { class: "auth-setup-desc" },
+              "خوش آمدید! چون اولین بار است وارد پنل می‌شوید، پسورد دلخواه خود را وارد کنید تا در متغیر ",
+              el("code", { style: "color:var(--primary);direction:ltr" }, "ADMIN"),
+              " ثبت و فعال شود."))),
+        el("form", {
+          onsubmit: async (e) => {
+            e.preventDefault();
+            const p1 = f1.inp.value;
+            const p2 = f2.inp.value;
+            if (p1.length < 6) {
+              toast("رمز عبور باید حداقل ۶ کاراکتر باشد", "warn", 4000);
+              f1.inp.focus();
+              return;
+            }
+            if (p1 !== p2) {
+              toast("رمز عبور و تکرار آن یکسان نیستند", "err", 4000);
+              f2.inp.focus();
+              return;
+            }
+            btn.disabled = true;
+            btn.replaceChildren(el("span", { class: "spin" }), " در حال ثبت متغیر ADMIN...");
+            try {
+              const r = await api("/api/setup-admin", { method: "POST", body: { password: p1 } });
+              toast(r.message || "پسورد در متغیر ADMIN تنظیم شد ✓", "ok", 5500);
+              await showMain();
+            } catch (ex) {
+              toast(ex.message, "err", 5000);
+              btn.disabled = false;
+              btn.replaceChildren(ic("shield", 16), " تنظیم در متغیر ADMIN و ورود");
+            }
+          },
+        },
+          el("div", { class: "fld", style: "text-align:right" },
+            el("div", { class: "auth-field-lbl" },
+              el("span", null, "رمز عبور جدید (ADMIN)"),
+              el("span", { class: "xs dim" }, "حداقل ۶ کاراکتر")),
+            f1.wrap,
+            el("div", { class: "pw-meter" },
+              el("div", { class: "pw-bars" }, ...bars),
+              el("div", { class: "pw-meter-lbl" }, el("span", null, "قدرت رمز عبور:"), strengthText))),
+          el("div", { class: "fld", style: "text-align:right" },
+            el("div", { class: "auth-field-lbl" },
+              el("span", null, "تکرار رمز عبور"),
+              matchHint),
+            f2.wrap),
+          btn),
+        authLinksFooter());
+      f1.inp.focus();
       return;
     }
 
+    const pwField = makeAuthPasswordInput("رمز عبور پنل (ADMIN) را وارد کنید", "current-password", "lock");
+    const btn = el("button", { class: "btn primary", type: "submit", style: "margin-top:4px" },
+      ic("lock", 16), " ورود به پنل مدیریت");
+
     b.append(
-      el("span", { class: "d1-pill ok" }, el("span", { class: "dot" }), "D1 متصل"),
-      el("span", { class: "d1-pill ok" }, el("span", { class: "dot" }), "متغیر ADMIN فعال"));
-
-    const pw = el("input", { type: "password", placeholder: "رمز عبور (متغیر ADMIN)", autocomplete: "current-password" });
-    const btn = el("button", { class: "btn primary", style: "width:100%;margin-top:6px" }, ic("lock", 14), " ورود");
-
-    b.append(el("form", {
-      onsubmit: async (e) => {
-        e.preventDefault();
-        btn.disabled = true; btn.textContent = "...";
-        try {
-          await api("/api/login", { method: "POST", body: { password: pw.value } });
-          await showMain();
-        } catch (ex) {
-          toast(ex.message, "err", 5000);
-          btn.disabled = false;
-          btn.replaceChildren(ic("lock", 14), " ورود");
-        }
+      el("div", { class: "auth-status-bar" },
+        el("span", { class: "d1-pill ok" }, el("span", { class: "dot pulse" }), "D1 متصل"),
+        el("span", { class: "d1-pill ok" }, el("span", { class: "dot pulse" }), "متغیر ADMIN فعال")),
+      el("form", {
+        onsubmit: async (e) => {
+          e.preventDefault();
+          if (!pwField.inp.value) {
+            toast("لطفاً رمز عبور را وارد کنید", "warn", 3000);
+            pwField.inp.focus();
+            return;
+          }
+          btn.disabled = true;
+          btn.replaceChildren(el("span", { class: "spin" }), " در حال بررسی و ورود...");
+          try {
+            await api("/api/login", { method: "POST", body: { password: pwField.inp.value } });
+            await showMain();
+          } catch (ex) {
+            toast(ex.message, "err", 5000);
+            btn.disabled = false;
+            btn.replaceChildren(ic("lock", 16), " ورود به پنل مدیریت");
+          }
+        },
       },
-    }, el("label", { class: "fld", style: "text-align:right" }, "رمز عبور پنل", pw), btn));
-    pw.focus();
+        el("div", { class: "fld", style: "text-align:right" },
+          el("div", { class: "auth-field-lbl" },
+            el("span", null, "رمز عبور پنل"),
+            el("code", { style: "font-size:11px;color:var(--primary)" }, "ADMIN")),
+          pwField.wrap),
+        btn),
+      authLinksFooter());
+    pwField.inp.focus();
   }
 
   async function showMain() {
@@ -4691,10 +5460,13 @@ function clientApp() {
     const tb = $("#btn-theme"), pw = $("#profile-wrap");
     if (tb && pw) { tb.classList.remove("theme-fab"); tb.classList.add("btn-theme-top"); pw.prepend(tb); }
     buildNav();
-    const doLogout = async () => { try { await api("/api/logout", { method: "POST" }); } catch {} location.reload(); };
+    const doLogout = () => {
+      confirmBox("مطمئنی میخوای از پنل خارج شی؟", async () => {
+        try { await api("/api/logout", { method: "POST" }); } catch {}
+        location.reload();
+      });
+    };
     $("#btn-logout").onclick = doLogout;
-    const logoutTop = $("#btn-logout-top");
-    if (logoutTop) logoutTop.onclick = doLogout;
     const menuBtn = $("#btn-menu");
     if (menuBtn) menuBtn.onclick = () => document.body.classList.toggle("side-open");
     const backdrop = $("#side-backdrop");
@@ -4712,8 +5484,8 @@ function clientApp() {
       else if (S.profiles.length) S.profile = S.profiles[0].name;
     } catch {}
     renderProfileSelect();
-    const requested = location.hash.replace(/^#\/?/, "");
-    go(NAV.some(n => n[0] === requested) ? requested : (S.profile ? "dashboard" : "accounts"));
+    const requested = routeFromLocation();
+    go(NAV.some(n => n[0] === requested) ? requested : (S.profile ? "dashboard" : "accounts"), { replace: true });
   }
 
   function renderProfileSelect() {
@@ -4739,30 +5511,55 @@ function clientApp() {
   }
 
   const NAV = [
-    ["dashboard", "home", "داشبورد"],
-    ["accounts", "user", "اکانت‌ها"],
-    ["workers", "server", "ورکرها"],
-    ["pages", "layers", "پروژه‌های Pages"],
-    ["tagged", "tag", "ورکرهای برچسب‌دار"],
-    ["kv", "box", "مخزن‌های KV"],
-    ["d1", "database", "دیتابیس‌های D1"],
-    ["creators", "rocket", "ساخت پنل"],
-    ["bulk", "refresh", "عملیات گروهی"],
-    ["health", "pulse", "پایش سلامت"],
-    ["settings", "lock", "تنظیمات"],
+    ["dashboard", "home", "داشبورد", "نمای کلی"],
+    ["accounts", "user", "اکانت‌ها", "نمای کلی"],
+    ["workers", "server", "ورکرها", "منابع کلادفلر"],
+    ["pages", "layers", "پروژه‌های Pages", "منابع کلادفلر"],
+    ["kv", "box", "مخزن‌های KV", "منابع کلادفلر"],
+    ["d1", "database", "دیتابیس‌های D1", "منابع کلادفلر"],
+    ["creators", "rocket", "ساخت پنل", "اتوماسیون Nexa"],
+    ["tagged", "tag", "ورکرهای برچسب‌دار", "اتوماسیون Nexa"],
+    ["bulk", "refresh", "عملیات گروهی", "اتوماسیون Nexa"],
+    ["health", "pulse", "پایش سلامت", "اتوماسیون Nexa"],
+    ["settings", "lock", "تنظیمات", "سیستم"],
   ];
+
+  function routeFromLocation() {
+    const h = (location.hash || "").replace(/^#\/?/, "").replace(/\/+$/, "");
+    if (h && NAV.some(n => n[0] === h)) return h;
+    const p = (location.pathname || "").replace(/^\/+|\/+$/g, "");
+    if (p && NAV.some(n => n[0] === p)) return p;
+    return "";
+  }
+
   function buildNav() {
     const nav = $("#nav");
     nav.innerHTML = "";
-    for (const [key, ico, label] of NAV) {
-      const b = el("a", { class: "nav-item" + (S.view === key ? " active" : ""), "data-v": key, href: "#/" + key, onclick: (e) => { e.preventDefault(); go(key); } }, ic(ico), label);
+    let lastSec = "";
+    for (const [key, ico, label, sec] of NAV) {
+      if (sec && sec !== lastSec) {
+        lastSec = sec;
+        nav.append(el("div", { class: "nav-sec" }, sec));
+      }
+      const b = el("a", {
+        class: "nav-item" + (S.view === key ? " active" : ""),
+        "data-v": key,
+        href: "/" + key,
+        onclick: (e) => { e.preventDefault(); go(key); },
+      }, ic(ico), label);
       nav.append(b);
     }
   }
-  function go(view) {
+  function go(view, opts) {
     document.body.classList.remove("side-open");
     S.view = view;
-    location.hash = "#/" + view;
+    const targetPath = "/" + view;
+    try {
+      if (location.pathname !== targetPath || location.hash) {
+        if (opts && opts.replace) history.replaceState({ view }, "", targetPath);
+        else history.pushState({ view }, "", targetPath);
+      }
+    } catch {}
     buildNav();
     $("#crumb").textContent = (NAV.find(n => n[0] === view) || ["", "", view])[2];
     const root = $("#view");
@@ -4777,22 +5574,33 @@ function clientApp() {
     Promise.resolve().then(() => fn(v)).catch((e) => {
       console.error(e);
       v.innerHTML = "";
-      v.append(errorBox("این بخش بارگذاری نشد", e, () => go(view)));
+      v.append(errorBox("این بخش بارگذاری نشد", e, () => go(view, { replace: true })));
     });
   }
 
-  window.addEventListener("hashchange", () => {
-    const h = location.hash.replace(/^#\/?/, "") || "dashboard";
-    if (h !== S.view && NAV.some(n => n[0] === h)) go(h);
+  window.addEventListener("popstate", () => {
+    const r = routeFromLocation() || "dashboard";
+    if (r !== S.view && NAV.some(n => n[0] === r)) go(r, { replace: true });
   });
-  (function initHash() {
-    const h = location.hash.replace(/^#\/?/, "");
-    if (h && NAV.some(n => n[0] === h)) S.view = h;
+  window.addEventListener("hashchange", () => {
+    const r = routeFromLocation() || "dashboard";
+    if (NAV.some(n => n[0] === r)) go(r, { replace: true });
+  });
+  (function initRoute() {
+    const r = routeFromLocation();
+    if (r && NAV.some(n => n[0] === r)) {
+      S.view = r;
+      if (location.hash) {
+        try { history.replaceState({ view: r }, "", "/" + r); } catch {}
+      }
+    } else if (location.hash) {
+      try { history.replaceState(null, "", location.pathname || "/"); } catch {}
+    }
   })();
 
   async function viewDashboard(v) {
     if (!ensureProfile()) return;
-    v.append(spinner("در حال بارگذاری اطلاعات اکانت..."));
+    v.append(spinner("در حال بارگذاری اطلاعات و آمار اکانت..."));
     try {
       if (!S.me) S.me = await api(`/api/me?profile=${encodeURIComponent(S.profile)}`);
       const [w, pg, kv, d1] = await Promise.all([
@@ -4802,53 +5610,166 @@ function clientApp() {
         api(`/api/d1?profile=${encodeURIComponent(S.profile)}`),
       ]);
       v.innerHTML = "";
-      v.append(el("div", { class: "card" },
-        el("h3", null, ic("user"), " اکانت فعال"),
-        el("div", { style: "display:flex;flex-direction:column;gap:12px;margin-top:4px" },
-          el("div", { class: "row", style: "gap:10px" },
-            el("span", { class: "dim small", style: "min-width:130px" }, "پروفایل:"),
-            el("span", { class: "badge c" }, S.profile)),
-          el("div", { class: "row", style: "gap:10px" },
-            el("span", { class: "dim small", style: "min-width:130px" }, "نام اکانت کلادفلر:"),
-            el("span", { style: "font-weight:700" }, S.me.account_name || "-")),
-          el("div", { class: "row", style: "gap:10px" },
-            el("span", { class: "dim small", style: "min-width:130px" }, "شناسه اکانت:"),
-            el("span", { class: "mono", style: "font-size:12.5px" }, S.me.account_id)))));
-      v.append(usageCard());
-      v.append(el("div", { class: "grid c4" },
-        el("div", { class: "stat" }, el("div", { class: "num" }, String(w.workers.length)), el("div", { class: "lbl" }, "ورکرها")),
-        el("div", { class: "stat" }, el("div", { class: "num" }, String((pg.projects || []).length)), el("div", { class: "lbl" }, "پروژه‌های Pages")),
-        el("div", { class: "stat" }, el("div", { class: "num" }, String(kv.namespaces.length)), el("div", { class: "lbl" }, "مخزن‌های KV")),
-        el("div", { class: "stat" }, el("div", { class: "num" }, String(d1.databases.length)), el("div", { class: "lbl" }, "دیتابیس‌های D1"))));
-      v.append(el("div", { class: "card" },
-        el("h3", null, ic("bolt"), " دسترسی سریع"),
-        el("div", { class: "btn-row" },
-          el("button", { class: "btn primary", onclick: () => go("creators") }, ic("rocket", 14), " ساخت پنل Nexa"),
-          el("button", { class: "btn", onclick: () => go("workers") }, ic("server", 14), " مدیریت ورکرها"),
-          el("button", { class: "btn", onclick: () => go("tagged") }, ic("tag", 14), " ورکرهای برچسب‌دار"),
-          el("button", { class: "btn", onclick: () => go("bulk") }, ic("refresh", 14), " آپدیت/ریبیلد گروهی"))));
+
+      const nexaCount = Array.isArray(w.nexa_workers) ? w.nexa_workers.length : 0;
+      const totalAccounts = Array.isArray(S.profiles) ? S.profiles.length : 1;
+
+      // 1. Top Two-Column Grid: Active Account Card + Daily Request Quota Card
+      const accCard = el("div", { class: "dsh-acc-card" },
+        el("div", { class: "spread" },
+          el("div", { class: "stg-hero-main" },
+            el("div", { class: "stg-hero-ico" }, ic("building", 23)),
+            el("div", null,
+              el("div", { class: "stg-hero-title" }, "وضعیت اکانت فعال Cloudflare"),
+              el("div", { class: "stg-hero-sub" }, "اطلاعات حساب انتخاب‌شده و ارتباط زنده با API کلادفلر"))),
+          el("div", { class: "row", style: "gap:8px" },
+            el("span", { class: "d1-pill ok" }, el("span", { class: "dot pulse" }), "API متصل"),
+            el("button", { class: "btn sm", onclick: () => go("accounts"), title: "مدیریت یا تعویض اکانت" }, ic("user", 14), " مدیریت اکانت‌ها"))),
+        el("div", { class: "dsh-meta-grid" },
+          el("div", { class: "dsh-meta-item" },
+            el("div", { class: "dsh-meta-lbl" }, ic("user", 13), "پروفایل انتخاب‌شده"),
+            el("div", { class: "dsh-meta-val" },
+              el("span", { class: "badge c", style: "font-size:12.5px;height:25px;padding:0 11px" }, S.profile),
+              el("span", { class: "xs dim" }, `از ${totalAccounts} اکانت`))),
+          el("div", { class: "dsh-meta-item" },
+            el("div", { class: "dsh-meta-lbl" }, ic("tag", 13), "پنل‌های برچسب‌دار Nexa"),
+            el("div", { class: "dsh-meta-val" },
+              el("span", null, `${nexaCount} پنل ثبت‌شده`),
+              el("span", { class: "badge v", style: "cursor:pointer", onclick: () => go("tagged") }, "مشاهده لیست"))),
+          el("div", { class: "dsh-meta-item" },
+            el("div", { class: "dsh-meta-lbl" }, ic("globe", 13), "نام حساب کلادفلر"),
+            el("div", { class: "dsh-meta-val", style: "direction:ltr;text-align:left" },
+              el("span", { style: "font-weight:700;font-size:12.5px" }, S.me.account_name || "-"))),
+          el("div", { class: "dsh-meta-item" },
+            el("div", { class: "dsh-meta-lbl" }, ic("key", 13), "شناسه اکانت (Account ID)"),
+            el("div", { class: "dsh-meta-val" },
+              el("span", { class: "mono", style: "font-size:12px" }, S.me.account_id || "-"),
+              S.me.account_id
+                ? el("span", { class: "copy-ico", title: "کپی Account ID", onclick: () => copyText(S.me.account_id) }, ic("copy", 14))
+                : null))));
+
+      v.append(el("div", { class: "dsh-top-grid" }, accCard, usageCard()));
+
+      // 2. Interactive 4-Column Resource Overview Cards
+      const workersCount = (w.workers || []).length;
+      const pagesCount = (pg.projects || []).length;
+      const kvCount = (kv.namespaces || []).length;
+      const d1Count = (d1.databases || []).length;
+
+      v.append(el("div", { class: "dsh-stats-grid" },
+        el("div", { class: "dsh-stat-card", onclick: () => go("workers") },
+          el("div", { class: "dsh-stat-top" },
+            el("div", { class: "dsh-stat-ico" }, ic("server", 20)),
+            el("span", { class: "badge c" }, "Workers ↗")),
+          el("div", { class: "dsh-stat-num" }, String(workersCount)),
+          el("div", null,
+            el("div", { class: "dsh-stat-title" }, "ورکرهای کلادفلر"),
+            el("div", { class: "dsh-stat-desc" }, "مدیریت اسکریپت‌ها، ویرایش زنده کد، دامنه‌های سفارشی و بایندینگ‌ها"))),
+        el("div", { class: "dsh-stat-card", onclick: () => go("pages") },
+          el("div", { class: "dsh-stat-top" },
+            el("div", { class: "dsh-stat-ico" }, ic("layers", 20)),
+            el("span", { class: "badge c" }, "Pages ↗")),
+          el("div", { class: "dsh-stat-num" }, String(pagesCount)),
+          el("div", null,
+            el("div", { class: "dsh-stat-title" }, "پروژه‌های Pages"),
+            el("div", { class: "dsh-stat-desc" }, "مدیریت پروژه‌های Direct Upload، استقرار _worker.js و اتصال دامنه"))),
+        el("div", { class: "dsh-stat-card", onclick: () => go("kv") },
+          el("div", { class: "dsh-stat-top" },
+            el("div", { class: "dsh-stat-ico" }, ic("box", 20)),
+            el("span", { class: "badge c" }, "Workers KV ↗")),
+          el("div", { class: "dsh-stat-num" }, String(kvCount)),
+          el("div", null,
+            el("div", { class: "dsh-stat-title" }, "مخزن‌های KV"),
+            el("div", { class: "dsh-stat-desc" }, "مشاهده فضاهای ذخیره‌سازی کلید-مقدار، کلیدهای موجود و پاک‌سازی"))),
+        el("div", { class: "dsh-stat-card", onclick: () => go("d1") },
+          el("div", { class: "dsh-stat-top" },
+            el("div", { class: "dsh-stat-ico" }, ic("database", 20)),
+            el("span", { class: "badge c" }, "D1 SQL ↗")),
+          el("div", { class: "dsh-stat-num" }, String(d1Count)),
+          el("div", null,
+            el("div", { class: "dsh-stat-title" }, "دیتابیس‌های D1"),
+            el("div", { class: "dsh-stat-desc" }, "مدیریت دیتابیس‌های رابطه‌ای، مشاهده جدول‌ها و اجرای کوئری SQL")))));
+
+      // 3. Quick Operations & Automation Launchpad
+      v.append(el("div", { class: "stg-card" },
+        el("div", { class: "stg-head", style: "padding-bottom:12px" },
+          el("div", { class: "stg-ico" }, ic("bolt", 20)),
+          el("div", { class: "stg-head-txt" },
+            el("div", { class: "stg-head-title" }, "ابزارهای عملیاتی و دسترسی سریع"),
+            el("div", { class: "stg-head-desc" }, "مهم‌ترین عملیات‌های ساخت، آپدیت، بازسازی و پایش خودکار پنل‌های Nexa در یک نگاه"))),
+        el("div", { class: "dsh-actions-grid" },
+          el("div", { class: "dsh-action-card featured", onclick: () => go("creators") },
+            el("div", { class: "dsh-action-ico" }, ic("rocket", 22)),
+            el("div", { class: "dsh-action-body" },
+              el("div", { class: "dsh-action-title" },
+                el("span", null, "ساخت خودکار پنل Nexa جدید"),
+                el("span", { class: "badge c" }, "نصب سریع")),
+              el("div", { class: "dsh-action-desc" }, "ایجاد و استقرار کامل پنل Nexa روی Worker یا Pages به‌همراه ساخت خودکار دیتابیس D1، توکن API و بایندینگ‌های موردنیاز"))),
+          el("div", { class: "dsh-action-card", onclick: () => go("bulk") },
+            el("div", { class: "dsh-action-ico" }, ic("refresh", 22)),
+            el("div", { class: "dsh-action-body" },
+              el("div", { class: "dsh-action-title" },
+                el("span", null, "آپدیت و ریبیلد گروهی پنل‌ها"),
+                el("span", { class: "badge n" }, "عملیات گروهی")),
+              el("div", { class: "dsh-action-desc" }, "بروزرسانی همزمان سورس کد یا بازسازی کامل (تغییر نام ورکر و دیتابیس با حفظ تنظیمات) برای تمام پنل‌های برچسب‌دار"))),
+          el("div", { class: "dsh-action-card", onclick: () => go("health") },
+            el("div", { class: "dsh-action-ico" }, ic("pulse", 22)),
+            el("div", { class: "dsh-action-body" },
+              el("div", { class: "dsh-action-title" },
+                el("span", null, "پایش سلامت و رفع خودکار خطای 1101"),
+                el("span", { class: "badge v" }, "پایش هوشمند")),
+              el("div", { class: "dsh-action-desc" }, "بررسی دوره‌ای و فوری وضعیت آنلاین بودن پنل‌ها و اجرای خودکار ریبیلد در صورت مسدود شدن یا بروز خطای 1101"))),
+          el("div", { class: "dsh-action-card", onclick: () => go("tagged") },
+            el("div", { class: "dsh-action-ico" }, ic("tag", 22)),
+            el("div", { class: "dsh-action-body" },
+              el("div", { class: "dsh-action-title" },
+                el("span", null, "مدیریت یکپارچه ورکرهای برچسب‌دار"),
+                el("span", { class: "badge n" }, "همه اکانت‌ها")),
+              el("div", { class: "dsh-action-desc" }, "مشاهده تمام پنل‌های علامت‌گذاری‌شده در کل اکانت‌ها، بررسی وضعیت موجود بودن در کلادفلر و حذف برچسب‌های اضافی"))))));
     } catch (e) { v.innerHTML = ""; v.append(el("div", { class: "card" }, el("div", { class: "empty" }, errLine(e)))); }
   }
 
   function usageCard() {
     const LIMIT = 100000;
     const fmt = (n) => Number(n || 0).toLocaleString("en-US");
-    const val = el("span", { class: "rq-val" }, el("span", { class: "rq-skel" }));
+    const val = el("div", { class: "dsh-usage-num" }, el("span", { class: "rq-skel" }));
+    const pctBadge = el("span", { class: "badge c" }, "در حال محاسبه...");
     const fill = el("i", { style: "width:0%" });
-    const bar = el("div", { class: "rq-bar" }, fill);
+    const bar = el("div", { class: "rq-bar", style: "height:12px;margin-top:6px" }, fill);
+    const remainTxt = el("span", null, "در حال دریافت آمار از Cloudflare GraphQL...");
+    const resetTxt = el("span", { class: "mono xs" }, "ریست: 00:00 UTC");
     const msg = el("div", { class: "rq-msg" });
     msg.style.display = "none";
-    const card = el("div", { class: "card rq-card" },
-      el("div", { class: "rq-top" }, el("span", { class: "rq-label" }, "ریکوئست‌های امروز"), val),
-      bar, msg);
+
+    const card = el("div", { class: "dsh-usage-card" },
+      el("div", { class: "spread" },
+        el("div", { class: "row", style: "gap:10px" },
+          el("div", { class: "dsh-stat-ico" }, ic("pulse", 19)),
+          el("div", null,
+            el("div", { style: "font-weight:800;font-size:14.5px;color:var(--text)" }, "مصرف ریکوئست روزانه اکانت"),
+            el("div", { class: "xs dim" }, "مجموع درخواست‌های Workers و Pages در روز جاری (UTC)"))),
+        pctBadge),
+      el("div", null,
+        el("div", { class: "dsh-usage-big" }, val),
+        bar,
+        msg),
+      el("div", { class: "dsh-usage-foot" }, remainTxt, resetTxt));
+
     api(`/api/usage?profile=${encodeURIComponent(S.profile)}`).then(u => {
       const total = Number(u.total) || 0, limit = Number(u.limit) || LIMIT;
       const pct = Math.min(100, (total / limit) * 100);
-      val.replaceChildren(fmt(total), el("span", null, ` / ${fmt(limit)}`));
+      const rem = Math.max(0, limit - total);
+      val.replaceChildren(fmt(total), el("span", null, ` / ${fmt(limit)} req`));
+      pctBadge.textContent = `${pct.toFixed(1)}% مصرف‌شده`;
+      pctBadge.className = "badge " + (pct >= 90 ? "r" : pct >= 70 ? "y" : "c");
       fill.style.width = `${total > 0 ? Math.max(pct, 1.5) : 0}%`;
       bar.classList.toggle("bad", pct >= 90);
+      remainTxt.textContent = `ظرفیت باقی‌مانده امروز: ${fmt(rem)} درخواست`;
     }).catch(e => {
       val.replaceChildren(el("span", null, "—"));
+      pctBadge.textContent = "نامشخص";
+      pctBadge.className = "badge off";
+      remainTxt.textContent = "عدم دریافت آمار مصرف";
       msg.textContent = (e && e.raw) || (e && e.message) || "دریافت آمار ناموفق بود";
       msg.style.display = "";
     });
@@ -4856,39 +5777,50 @@ function clientApp() {
   }
 
   async function viewAccounts(v) {
-    v.append(spinner("در حال دریافت اکانت‌ها..."));
+    v.append(spinner("در حال دریافت لیست اکانت‌های کلادفلر..."));
     await refreshProfiles().catch(() => {});
     v.innerHTML = "";
-    const card = el("div", { class: "card" },
-      el("div", { class: "spread" },
-        el("h3", null, ic("user"), " اکانت‌های ذخیره‌شده (توکن‌ها داخل D1)"),
-        el("div", { class: "row" },
-          el("button", { class: "btn primary sm", onclick: addProfileModal }, ic("plus", 14), " افزودن اکانت"),
-          el("button", { class: "btn sm", onclick: addBulkProfilesModal }, ic("layers", 14), " افزودن گروهی"))));
+
+    v.append(el("div", { class: "stg-hero" },
+      el("div", { class: "stg-hero-main" },
+        el("div", { class: "stg-hero-ico" }, ic("user", 24)),
+        el("div", null,
+          el("div", { class: "stg-hero-title" }, "مدیریت حساب‌ها و توکن‌های Cloudflare"),
+          el("div", { class: "stg-hero-sub" }, "افزودن، ویرایش و اولویت‌بندی اکانت‌های کلادفلر. با کلیک روی هر ردیف، آن حساب به‌عنوان اکانت فعال پنل انتخاب می‌شود."))),
+      el("div", { class: "row", style: "gap:8px" },
+        el("button", { class: "btn primary sm", onclick: addProfileModal }, ic("plus", 14), " افزودن اکانت جدید"),
+        el("button", { class: "btn sm", onclick: addBulkProfilesModal }, ic("layers", 14), " افزودن گروهی"),
+        el("button", { class: "btn sm", onclick: tokenLinkModal }, ic("link", 14), " لینک ساخت توکن آماده"))));
+
+    const card = el("div", { class: "stg-card" });
     if (!S.profiles.length) {
-      card.append(el("div", { class: "empty" }, "هیچ اکانی ذخیره نشده. یکی اضافه کنید."));
+      card.append(el("div", { class: "empty" },
+        ic("user", 28),
+        el("div", { style: "font-weight:800;color:var(--text);margin:6px 0 4px" }, "هنوز هیچ اکانت کلادفلری ثبت نشده است"),
+        el("div", { class: "small dim" }, "برای شروع کار با پنل، از دکمه «افزودن اکانت جدید» در بالا استفاده کنید یا از بخش «لینک ساخت توکن آماده» یک توکن API بسازید.")));
       v.append(card);
       return;
     }
-    const rows = S.profiles.map((p, idx) => el("tr", { onclick: () => { S.profile = p.name; localStorage.setItem("nexa_profile", p.name); renderProfileSelect(); go("dashboard"); } },
-      el("td", null, p.name === S.profile ? el("span", { class: "badge c" }, p.name) : p.name),
+    const rows = S.profiles.map((p, idx) => el("tr", { style: "cursor:pointer", onclick: () => { S.profile = p.name; localStorage.setItem("nexa_profile", p.name); renderProfileSelect(); go("dashboard"); } },
+      el("td", null, p.name === S.profile ? el("span", { class: "badge c" }, p.name) : el("span", { style: "font-weight:700" }, p.name)),
       el("td", { class: "mono" }, p.account_id),
       el("td", { class: "mono" }, p.token_masked),
-      el("td", null, String(p.nexa_workers.length)),
+      el("td", null, p.nexa_workers.length ? el("span", { class: "badge v" }, `${p.nexa_workers.length} پنل`) : el("span", { class: "dim small" }, "0")),
       el("td", null, el("div", { class: "row", style: "gap:8px;flex-wrap:nowrap" },
-        p.name === S.profile ? el("span", { class: "badge v" }, "فعال") : el("span", { class: "dim small" }, "انتخاب کن"),
+        p.name === S.profile ? el("span", { class: "badge c" }, "اکانت فعال ✓") : el("span", { class: "dim small" }, "کلیک برای انتخاب"),
         el("button", { class: "btn xs", title: "انتقال به بالا", disabled: idx === 0 ? "disabled" : null, style: idx === 0 ? "opacity:.35;cursor:default" : "", onclick: (e) => { e.stopPropagation(); moveProfile(p.name, -1); } }, ic("up", 14)),
         el("button", { class: "btn xs", title: "انتقال به پایین", disabled: idx === S.profiles.length - 1 ? "disabled" : null, style: idx === S.profiles.length - 1 ? "opacity:.35;cursor:default" : "", onclick: (e) => { e.stopPropagation(); moveProfile(p.name, 1); } }, ic("down", 14)),
         el("button", { class: "btn xs", onclick: (e) => { e.stopPropagation(); editProfileModal(p.name); } }, ic("pencil", 12), " ویرایش"))),
     ));
-    card.append(el("div", { class: "tbl-wrap" }, el("table", null,
-      el("thead", null, el("tr", null,
-        el("th", null, "نام پروفایل"), el("th", null, "Account ID"), el("th", null, "توکن"), el("th", null, "پنل Nexa"), el("th", null, "عملیات"))),
-      el("tbody", null, rows))));
-    const actions = el("div", { class: "btn-row" },
-      el("button", { class: "btn warn sm", onclick: deleteProfileModal }, ic("trash", 14), " حذف پروفایل"),
-      el("button", { class: "btn sm", onclick: tokenLinkModal }, ic("link", 14), " لینک ساخت توکن (با دسترسی‌های آماده)"));
-    card.append(actions);
+    card.append(
+      el("div", { class: "tbl-wrap" }, el("table", null,
+        el("thead", null, el("tr", null,
+          el("th", null, "نام پروفایل"), el("th", null, "شناسه اکانت (Account ID)"), el("th", null, "توکن API (ماسک‌شده)"), el("th", null, "پنل‌های Nexa"), el("th", null, "وضعیت و عملیات"))),
+        el("tbody", null, rows))),
+      el("div", { class: "spread", style: "padding-top:4px" },
+        el("div", { class: "small dim" }, "نکته: توکن‌های API به‌صورت امن در دیتابیس D1 ذخیره می‌شوند. برای انتخاب سریع هر اکانت، روی ردیف آن کلیک کنید."),
+        el("div", { class: "btn-row" },
+          el("button", { class: "btn danger sm", onclick: deleteProfileModal }, ic("trash", 14), " حذف اکانت..."))));
     v.append(card);
   }
 
@@ -5063,23 +5995,29 @@ function clientApp() {
 
   async function viewWorkers(v) {
     if (!ensureProfile()) return;
-    v.append(spinner("در حال دریافت ورکرها..."));
+    v.append(spinner("در حال دریافت لیست ورکرهای کلادفلر..."));
     try {
       const d = await api(`/api/workers?profile=${encodeURIComponent(S.profile)}`);
       v.innerHTML = "";
-      const card = el("div", { class: "card" }, el("h3", null, ic("server"), ` ورکرهای اکانت «${S.profile}»`));
-      if (!d.workers.length) { card.append(el("div", { class: "empty" }, "ورکری در این اکانت نیست.")); v.append(card); return; }
+      const card = el("div", { class: "stg-card" });
+      if (!d.workers.length) {
+        card.append(el("div", { class: "empty" },
+          ic("server", 26),
+          el("div", { style: "font-weight:800;color:var(--text);margin:6px 0 4px" }, "هیچ ورکری در این اکانت یافت نشد"),
+          el("div", { class: "small dim" }, "برای استقرار اولین ورکر، از بخش «ساخت پنل» در منوی سمت راست اقدام کنید.")));
+        v.append(card);
+        return;
+      }
       const rows = d.workers.map(w => {
         const isN = d.nexa_workers.includes(w.name);
-        return el("tr", { onclick: () => workerDetail(w.name) },
-          el("td", null, w.name),
-          el("td", null, isN ? el("span", { class: "badge n" }, "nexa") : el("span", { class: "badge off" }, "—")),
-          el("td", { class: "mono" }, w.modified_on || "-"));
+        return el("tr", { style: "cursor:pointer", onclick: () => workerDetail(w.name) },
+          el("td", { class: "bold mono", style: "font-size:13px" }, w.name),
+          el("td", null, isN ? el("span", { class: "badge n" }, "پنل Nexa") : el("span", { class: "badge off" }, "عادی")),
+          el("td", { class: "mono small" }, w.modified_on || "-"));
       });
       card.append(el("div", { class: "tbl-wrap" }, el("table", null,
-        el("thead", null, el("tr", null, el("th", null, "نام ورکر"), el("th", null, "پرچم‌ها"), el("th", null, "آخرین تغییر"))),
+        el("thead", null, el("tr", null, el("th", null, "نام اسکریپت Worker"), el("th", null, "برچسب و نوع"), el("th", null, "آخرین بروزرسانی"))),
         el("tbody", null, rows))));
-      card.append(el("div", { class: "auth-hint" }, "برای مدیریت روی ورکر کلیک کنید."));
       v.append(card);
     } catch (e) { v.innerHTML = ""; v.append(el("div", { class: "card" }, el("div", { class: "empty" }, errLine(e)))); }
   }
@@ -5124,84 +6062,35 @@ function clientApp() {
 
   async function viewPages(v) {
     if (!ensureProfile()) return;
-    v.append(spinner("در حال دریافت پروژه‌های Cloudflare Pages..."));
+    v.append(spinner("در حال دریافت لیست پروژه‌های کلادفلر Pages..."));
     try {
       const d = await api(`/api/pages?profile=${encodeURIComponent(S.profile)}`);
       v.innerHTML = "";
-
-      const headRow = el("div", { class: "spread", style: "margin-bottom:14px;flex-wrap:wrap;gap:8px" },
-        el("h3", null, ic("layers"), ` پروژه‌های Cloudflare Pages (اکانت «${S.profile}»)`),
-        el("div", { class: "btn-row" },
-          el("button", { class: "btn primary sm", onclick: () => pagesCreateModal() }, ic("plus", 14), " پروژه Pages جدید"),
-          el("button", { class: "btn sm", onclick: () => pagesDeployModal() }, ic("upload", 14), " استقرار سریع کد"),
-          el("button", { class: "btn sm", onclick: () => go("pages") }, ic("refresh", 14), " تازه‌سازی"))
-      );
-
-      const filterInput = el("input", { placeholder: "جستجوی پروژه Pages یا دامنه...", style: "margin-bottom:12px;width:100%" });
-      const card = el("div", { class: "card" }, headRow, filterInput);
+      const card = el("div", { class: "stg-card" });
       const projects = d.projects || [];
       const nexaList = d.nexa_workers || [];
 
       if (!projects.length) {
-        card.append(el("div", { class: "empty" }, "هیچ پروژه Pagesای در این اکانت پیدا نشد.",
-          el("div", { class: "small dim", style: "margin-top:6px" }, "می‌توانید از دکمه «پروژه Pages جدید» در بالا یا از بخش «ساخت پنل / ورکر» یک پروژه بسازید.")));
+        card.append(el("div", { class: "empty" },
+          ic("layers", 26),
+          el("div", { style: "font-weight:800;color:var(--text);margin:6px 0 4px" }, "هیچ پروژه Pages در این اکانت یافت نشد"),
+          el("div", { class: "small dim" }, "برای استقرار اولین پروژه، از بخش «ساخت پنل» در منوی سمت راست اقدام کنید.")));
         v.append(card);
         return;
       }
 
-      const tbody = el("tbody");
-      function renderRows(list) {
-        tbody.innerHTML = "";
-        if (!list.length) {
-          tbody.append(el("tr", null, el("td", { colspan: "5", style: "text-align:center" }, "موردی یافت نشد")));
-          return;
-        }
-        for (const p of list) {
-                  const isN = nexaList.includes(p.name);
-          const subdomain = p.subdomain || `${p.name}.pages.dev`;
-          const url = `https://${subdomain}`;
-          const prodBranch = p.production_branch || "main";
-          const latestDep = p.latest_deployment;
-          const depStatus = latestDep ? latestDep.status : "—";
-          const statusBadge = depStatus === "SUCCESS"
-            ? el("span", { class: "badge ok" }, "موفق")
-            : depStatus === "FAILURE"
-              ? el("span", { class: "badge danger" }, "ناموفق")
-              : depStatus === "ACTIVE"
-                ? el("span", { class: "badge ok" }, "فعال")
-                : el("span", { class: "badge off" }, depStatus || "بدون دپلویمنت");
-
-          const tr = el("tr", { onclick: () => pagesDetail(p.name), style: "cursor:pointer" },
-            el("td", { class: "bold mono", style: "font-size:13px" }, p.name),
-            el("td", null,
-              isN ? el("span", { class: "badge n" }, "nexa") : el("span", { class: "badge off" }, "—")),
-            el("td", null, el("a", { href: url, target: "_blank", rel: "noopener", class: "mono small", style: "color:var(--cyan);display:inline-flex;align-items:center;gap:4px", onclick: (e) => e.stopPropagation() }, subdomain, ic("link", 11))),
-            el("td", null, el("span", { class: "badge off" }, prodBranch), " ", statusBadge),
-            el("td", { class: "small mono" }, (p.created_on || "").slice(0, 10) || "—")
-          );
-          tbody.append(tr);
-        }
-      }
-
-      renderRows(projects);
-
-      filterInput.addEventListener("input", () => {
-        const q = filterInput.value.toLowerCase().trim();
-        renderRows(projects.filter(p => p.name.toLowerCase().includes(q) || (p.subdomain || "").toLowerCase().includes(q)));
+      const rows = projects.map(p => {
+        const isN = nexaList.includes(p.name);
+        const mod = (p.latest_deployment && p.latest_deployment.created_on) || p.created_on || "-";
+        return el("tr", { style: "cursor:pointer", onclick: () => pagesDetail(p.name) },
+          el("td", { class: "bold mono", style: "font-size:13px" }, p.name),
+          el("td", null, isN ? el("span", { class: "badge n" }, "پنل Nexa") : el("span", { class: "badge off" }, "عادی")),
+          el("td", { class: "mono small" }, mod));
       });
 
-      const tblWrap = el("div", { class: "tbl-wrap" }, el("table", null,
-        el("thead", null, el("tr", null,
-          el("th", null, "نام پروژه Pages"),
-          el("th", null, "پرچم‌ها"),
-          el("th", null, "آدرس ساب‌دامین"),
-          el("th", null, "شاخه اصلی / وضعیت"),
-          el("th", null, "تاریخ ساخت"))),
-        tbody
-      ));
-
-      card.append(tblWrap);
-      card.append(el("div", { class: "auth-hint" }, "برای مدیریت کامل پروژه، اتصال‌های KV و D1، مدیریت دامنه‌ها، استقرار کد و تنظیمات روی سطر پروژه کلیک کنید."));
+      card.append(el("div", { class: "tbl-wrap" }, el("table", null,
+        el("thead", null, el("tr", null, el("th", null, "نام پروژه Pages"), el("th", null, "برچسب و نوع"), el("th", null, "آخرین بروزرسانی"))),
+        el("tbody", null, rows))));
       v.append(card);
     } catch (e) {
       v.innerHTML = "";
@@ -5213,230 +6102,39 @@ function clientApp() {
     const v = $("#view");
     v.innerHTML = "";
     v.append(el("span", { class: "back-link", onclick: () => go("pages") }, "→ بازگشت به لیست پروژه‌های Pages"));
-    const head = el("div", { class: "card" }, spinner("در حال دریافت مشخصات پروژه Pages..."));
+    const head = el("div", { class: "card" }, spinner("در حال دریافت..."));
     v.append(head);
 
-    let proj = null;
     let flags = { nexa_workers: [] };
-    let bindsData = { bindings: [], d1_databases: {}, env_vars: {}, kv_namespaces: {} };
     try {
-      const [pRes, fRes, bRes] = await Promise.all([
-        api(`/api/pages/${encodeURIComponent(name)}?profile=${encodeURIComponent(S.profile)}`),
-        api(`/api/pages?profile=${encodeURIComponent(S.profile)}`).catch(() => ({ nexa_workers: [] })),
-        api(`/api/pages/${encodeURIComponent(name)}/bindings?profile=${encodeURIComponent(S.profile)}`).catch(() => ({ bindings: [], d1_databases: {}, env_vars: {}, kv_namespaces: {} }))
-      ]);
-      proj = pRes.project || {};
-      flags = fRes;
-      bindsData = bRes || {};
-    } catch (e) {
-      head.innerHTML = "";
-      head.append(el("div", { class: "empty" }, errLine(e)));
-      return;
-    }
-
-      const isN = (flags.nexa_workers || []).includes(name);
-    const subdomain = proj.subdomain || `${name}.pages.dev`;
-    const url = `https://${subdomain}`;
-    const prodBranch = proj.production_branch || "main";
-    const domainsCount = (proj.domains || []).length;
+      const fRes = await api(`/api/pages?profile=${encodeURIComponent(S.profile)}`);
+      flags = fRes || { nexa_workers: [] };
+    } catch {}
+    const isN = (flags.nexa_workers || []).includes(name);
 
     head.innerHTML = "";
     head.append(
-      el("h3", { style: "direction:ltr;display:flex;align-items:center;gap:8px" }, ic("layers", 20), name),
-      el("div", { class: "row", style: "margin:10px 0;flex-wrap:wrap;gap:8px" },
-        isN ? el("span", { class: "badge n" }, "پنل Nexa") : el("span", { class: "badge off" }, "Nexa: ندارد"),
-        el("a", { href: url, target: "_blank", rel: "noopener", class: "badge ok", style: "text-decoration:none;display:inline-flex;align-items:center;gap:4px" }, ic("globe", 12), ` ${subdomain} ↗`),
-        el("span", { class: "badge off" }, `شاخه: ${prodBranch}`),
-        el("span", { class: "badge off" }, `دامنه‌ها: ${domainsCount}`)
-      ),
+      el("h3", { style: "direction:ltr" }, name),
+      el("div", { class: "row", style: "margin:8px 0" },
+        isN ? el("span", { class: "badge n" }, "پنل Nexa") : el("span", { class: "badge off" }, "Nexa: ندارد")),
       el("div", { class: "btn-row" },
-        el("button", { class: "btn primary sm", onclick: () => pagesChangeD1Modal(name) }, ic("database", 14), " تغییر دیتابیس D1"),
         el("button", { class: "btn primary sm", onclick: () => quickDeployModal("pages", name) }, ic("upload", 14), " آپلود / پیست کد و دپلوی"),
         el("button", { class: "btn sm", onclick: () => pagesRedeployDirect(name) }, ic("refresh", 14), " استقرار مجدد (Re-deploy)"),
-        el("button", { class: "btn danger sm", onclick: () => pagesRebuildModal(name, "nexa") }, ic("hammer", 14), " ریبیلد کامل Pages"),
         el("button", { class: "btn sm", onclick: () => pagesUrlModal(name) }, ic("globe", 14), " آدرس پروژه"),
-        el("button", { class: "btn sm", onclick: () => pagesDomainsModal(name) }, ic("globe", 14), ` دامنه‌ها (${domainsCount})`),
-        el("button", { class: "btn sm", onclick: () => pagesDeploymentsModal(name) }, ic("clock", 14), " استقرارها / تاریخچه"),
+        el("button", { class: "btn danger sm", onclick: () => pagesRebuildModal(name, "nexa") }, ic("hammer", 14), " ریبیلد کامل Pages"),
+        el("button", { class: "btn sm", onclick: () => pagesChangeD1Modal(name) }, ic("database", 14), " تغییر دیتابیس D1"),
         el("button", { class: "btn sm", onclick: () => pagesBindKvModal(name) }, ic("box", 14), " اتصال KV"),
         el("button", { class: "btn sm", onclick: () => pagesBindD1Modal(name) }, ic("database", 14), " اتصال D1"),
-        el("button", { class: "btn sm", onclick: () => pagesAddEnvVarModal(name) }, ic("settings", 14), " افزودن متغیر"),
+        el("button", { class: "btn sm", onclick: () => pagesUnbindModal(name) }, ic("scissors", 14), " حذف بایندینگ"),
+        el("button", { class: "btn sm", onclick: () => pagesBindingsModal(name) }, ic("search", 14), " لیست بایندینگ‌ها"),
         el("button", { class: "btn sm", onclick: () => pagesConfigsModal(name) }, ic("settings", 14), " مدیریت کل تنظیمات"),
+        el("button", { class: "btn sm", onclick: () => pagesDeploymentsModal(name) }, ic("clock", 14), " استقرارها / تاریخچه"),
+        el("button", { class: "btn sm", onclick: () => pagesDomainsModal(name) }, ic("globe", 14), " دامنه‌های حساب"),
         el("button", { class: "btn danger sm", onclick: () => pagesDeleteModal(name) }, ic("trash", 14), " حذف پروژه Pages"),
         el("button", { class: `btn sm ${isN ? "ok" : "warn"}`, onclick: () => togglePagesFlag(name, "nexa", !isN) }, isN ? [ic("check", 14), " Nexa فعال — خاموش کن"] : "علامت‌گذاری Nexa")
       )
     );
-
-    const configs = (proj.deployment_configs && proj.deployment_configs.production) || {};
-    const d1Obj = (bindsData.d1_databases && Object.keys(bindsData.d1_databases).length) ? bindsData.d1_databases : (configs.d1_databases || {});
-    const envObj = (bindsData.env_vars && Object.keys(bindsData.env_vars).length) ? bindsData.env_vars : (configs.env_vars || {});
-    const kvObj = (bindsData.kv_namespaces && Object.keys(bindsData.kv_namespaces).length) ? bindsData.kv_namespaces : (configs.kv_namespaces || {});
-
-    const d1Card = el("div", { class: "card", style: "margin-top:14px" });
-    const d1Header = el("div", { class: "spread", style: "margin-bottom:10px;flex-wrap:wrap;gap:8px" },
-      el("div", null,
-        el("h4", { style: "display:flex;align-items:center;gap:8px;margin:0" }, ic("database", 17), " پایگاه‌داده‌های D1"),
-        el("div", { class: "small dim", style: "margin-top:4px" }, "دیتابیس‌های متصل به عنوان env.DB. پس از هر تغییر، کدهای پروژه به صورت خودکار مجدداً مستقر (Re-deploy) می‌شوند.")
-      ),
-      el("div", { class: "btn-row" },
-        el("button", { class: "btn primary sm", onclick: () => pagesChangeD1Modal(name) }, ic("refresh", 13), " تغییر / تعویض D1"),
-        el("button", { class: "btn sm", onclick: () => pagesBindD1Modal(name) }, ic("plus", 13), " اتصال D1 جدید")
-      )
-    );
-    d1Card.append(d1Header);
-
-    const d1Keys = Object.keys(d1Obj).filter(k => d1Obj[k] !== null && d1Obj[k] !== undefined);
-    if (!d1Keys.length) {
-      d1Card.append(
-        el("div", { class: "empty", style: "padding:18px 12px" },
-          "هیچ پایگاه‌داده D1ای به این پروژه متصل نیست.",
-          el("div", { style: "margin-top:10px" },
-            el("button", { class: "btn primary sm", onclick: () => pagesBindD1Modal(name) }, ic("plus", 13), " اتصال دیتابیس D1")
-          )
-        )
-      );
-    } else {
-      const d1Rows = d1Keys.map(k => {
-        const val = d1Obj[k];
-        const dbId = typeof val === "string" ? val : (val?.id || val?.database_id || "—");
-        return el("tr", null,
-          el("td", { class: "bold mono", style: "color:var(--cyan)" }, `env.${k}`),
-          el("td", { class: "mono small" }, dbId),
-          el("td", null, el("span", { class: "badge ok" }, "متصل (Active)")),
-          el("td", null,
-            el("div", { class: "btn-row", style: "justify-content:flex-end" },
-              el("button", { class: "btn primary sm", title: "تغییر یا تعویض دیتابیس D1", onclick: () => pagesChangeD1Modal(name, k) }, ic("refresh", 13), " تعویض دیتابیس"),
-              el("button", { class: "btn danger sm", title: "حذف بایندینگ", onclick: () => pagesUnbindBinding(name, k, "D1") }, ic("trash", 13), " حذف بایندینگ")
-            )
-          )
-        );
-      });
-      d1Card.append(
-        el("div", { class: "tbl-wrap" }, el("table", null,
-          el("thead", null, el("tr", null,
-            el("th", null, "نام در کد (Binding)"),
-            el("th", null, "شناسه پایگاه داده (UUID)"),
-            el("th", null, "وضعیت"),
-            el("th", { style: "text-align:left" }, "عملیات")
-          )),
-          el("tbody", null, d1Rows)
-        ))
-      );
-    }
-    v.append(d1Card);
-
-    const envCard = el("div", { class: "card", style: "margin-top:14px" });
-    const envHeader = el("div", { class: "spread", style: "margin-bottom:10px;flex-wrap:wrap;gap:8px" },
-      el("div", null,
-        el("h4", { style: "display:flex;align-items:center;gap:8px;margin:0" }, ic("settings", 17), " متغیرهای محیطی (Environment Variables)"),
-        el("div", { class: "small dim", style: "margin-top:4px" }, "متغیرهای متنی و مقادیر محرمانه (Secret / Plain Text). پس از هر تغییر، پروژه خودکار Re-deploy می‌شود.")
-      ),
-      el("div", { class: "btn-row" },
-        el("button", { class: "btn primary sm", onclick: () => pagesAddEnvVarModal(name) }, ic("plus", 13), " افزودن متغیر جدید")
-      )
-    );
-    envCard.append(envHeader);
-
-    const envKeys = Object.keys(envObj).filter(k => envObj[k] !== null && envObj[k] !== undefined);
-    if (!envKeys.length) {
-      envCard.append(
-        el("div", { class: "empty", style: "padding:18px 12px" },
-          "هیچ متغیر محیطی برای این پروژه تعریف نشده است.",
-          el("div", { style: "margin-top:10px" },
-            el("button", { class: "btn primary sm", onclick: () => pagesAddEnvVarModal(name) }, ic("plus", 13), " افزودن اولین متغیر")
-          )
-        )
-      );
-    } else {
-      const envRows = envKeys.map(k => {
-        const val = envObj[k];
-        const isSecret = typeof val === "object" && val?.type === "secret_text";
-        const varType = isSecret ? "secret_text" : "plain_text";
-        const rawVal = typeof val === "string" ? val : (val?.value || "");
-
-        let valCell;
-        if (isSecret) {
-          valCell = el("td", { class: "mono small dim" }, "••••••••");
-        } else {
-          valCell = el("td", { class: "mono small", style: "word-break:break-all;max-width:260px" }, rawVal);
-        }
-
-        return el("tr", null,
-          el("td", { class: "bold mono" }, k),
-          el("td", null, el("span", { class: isSecret ? "badge warn" : "badge off" }, isSecret ? "محرمانه (Secret)" : "متن عادی (Plain)")),
-          valCell,
-          el("td", null,
-            el("div", { class: "btn-row", style: "justify-content:flex-end" },
-              el("button", { class: "btn sm", title: "ویرایش متغیر", onclick: () => pagesEditEnvVarModal(name, k, rawVal, varType) }, ic("pencil", 13), " ویرایش"),
-              el("button", { class: "btn danger sm", title: "حذف متغیر", onclick: () => pagesDeleteEnvVar(name, k) }, ic("trash", 13), " حذف")
-            )
-          )
-        );
-      });
-      envCard.append(
-        el("div", { class: "tbl-wrap" }, el("table", null,
-          el("thead", null, el("tr", null,
-            el("th", null, "نام متغیر (Key)"),
-            el("th", null, "نوع (Type)"),
-            el("th", null, "مقدار (Value)"),
-            el("th", { style: "text-align:left" }, "عملیات")
-          )),
-          el("tbody", null, envRows)
-        ))
-      );
-    }
-    v.append(envCard);
-
-    const kvKeys = Object.keys(kvObj).filter(k => kvObj[k] !== null && kvObj[k] !== undefined);
-    if (kvKeys.length) {
-      const kvCard = el("div", { class: "card", style: "margin-top:14px" });
-      const kvHeader = el("div", { class: "spread", style: "margin-bottom:10px;flex-wrap:wrap;gap:8px" },
-        el("div", null,
-          el("h4", { style: "display:flex;align-items:center;gap:8px;margin:0" }, ic("box", 17), " مخزن‌های KV"),
-          el("div", { class: "small dim", style: "margin-top:4px" }, "فضاهای ذخیره‌سازی کلید-مقدار متصل به پروژه.")
-        ),
-        el("div", { class: "btn-row" },
-          el("button", { class: "btn sm", onclick: () => pagesBindKvModal(name) }, ic("plus", 13), " اتصال KV جدید")
-        )
-      );
-      kvCard.append(kvHeader);
-      const kvRows = kvKeys.map(k => {
-        const val = kvObj[k];
-        const kvId = typeof val === "string" ? val : (val?.namespace_id || val?.id || "—");
-        return el("tr", null,
-          el("td", { class: "bold mono", style: "color:var(--cyan)" }, `env.${k}`),
-          el("td", { class: "mono small" }, kvId),
-          el("td", null, el("span", { class: "badge v" }, "مخزن KV")),
-          el("td", null,
-            el("div", { class: "btn-row", style: "justify-content:flex-end" },
-              el("button", { class: "btn danger sm", onclick: () => pagesUnbindBinding(name, k, "KV") }, ic("trash", 13), " حذف بایندینگ")
-            )
-          )
-        );
-      });
-      kvCard.append(
-        el("div", { class: "tbl-wrap" }, el("table", null,
-          el("thead", null, el("tr", null,
-            el("th", null, "نام در کد (Binding)"),
-            el("th", null, "شناسه KV (ID)"),
-            el("th", null, "نوع"),
-            el("th", { style: "text-align:left" }, "عملیات")
-          )),
-          el("tbody", null, kvRows)
-        ))
-      );
-      v.append(kvCard);
-    }
-
-    const guideCard = el("div", { class: "card", style: "margin-top:14px;background:rgba(56,227,49,0.05);border-color:rgba(56,227,49,0.25)" },
-      el("div", { style: "display:flex;align-items:center;gap:8px;font-weight:bold;margin-bottom:6px;color:var(--text)" },
-        ic("zap", 16), " استقرار خودکار و بی‌درنگ تغییرات :"
-      ),
-      el("div", { class: "small dim", style: "line-height:1.7" },
-        "در پلتفرم Cloudflare Pages، اعمال هرگونه تغییر بر روی پایگاه‌داده‌های D1، متغیرهای محیطی یا KV نیازمند استقرار مجدد کدهای پروژه است. ",
-        "سیستم این فرایند را کاملاً خودکار نموده است: با هر ثبت، ویرایش، تعویض دیتابیس یا حذف، کدهای پروژه بلافاصله روی Cloudflare Pages مجدداً مستقر (Re-deploy) می‌شوند."
-      )
-    );
-    v.append(guideCard);
+    v.append(head);
   }
   async function togglePagesFlag(name, kind, val) {
     try {
@@ -6455,23 +7153,30 @@ function clientApp() {
     const missing = items.filter(i => i.missing).length;
     const unchecked = items.filter(i => i.exists === null).length;
 
-    const card = el("div", { class: "card" },
-      el("h3", null, ic("tag"), " ورکرهای برچسب‌دار (همه اکانت‌ها)"),
-      el("div", { class: "row", style: "margin:8px 0;flex-wrap:wrap" },
-        el("span", { class: "badge c" }, `${items.length} ورکر برچسب‌دار`),
-        " ",
-        el("span", { class: "badge v" }, `${items.length - missing - unchecked} موجود`),
-        missing ? [" ", el("span", { class: "badge r" }, `${missing} ناموجود (حذف‌شده)`)] : null,
-        unchecked ? [" ", el("span", { class: "badge y" }, `${unchecked} بررسی‌نشده`)] : null));
-
-    const q = el("input", { type: "search", placeholder: "جستجو: نام ورکر یا اکانت...", style: "max-width:250px;margin:0" });
-    q.value = taggedFilter.q;
-    const onlyMissing = el("input", { type: "checkbox" });
-    onlyMissing.checked = taggedFilter.missingOnly;
-    const refreshBtn = el("button", { class: "btn sm", onclick: () => go("tagged") }, ic("refresh", 13), " به‌روزرسانی");
+    const refreshBtn = el("button", { class: "btn sm", onclick: () => go("tagged") }, ic("refresh", 13), " به‌روزرسانی وضعیت");
     const pruneBtn = missing
       ? el("button", { class: "btn danger sm", onclick: pruneTagged }, ic("trash", 13), ` پاک‌سازی ${missing} مورد ناموجود`)
       : null;
+
+    v.append(el("div", { class: "stg-hero" },
+      el("div", { class: "stg-hero-main" },
+        el("div", { class: "stg-hero-ico" }, ic("tag", 24)),
+        el("div", null,
+          el("div", { class: "stg-hero-title" }, "ورکرها و پنل‌های برچسب‌دار Nexa (همه اکانت‌ها)"),
+          el("div", { class: "stg-hero-sub" }, "مشاهده یکپارچه تمام ورکرهای علامت‌گذاری‌شده در کل حساب‌ها، بررسی وجود فیزیکی آن‌ها در Cloudflare و پاک‌سازی برچسب‌های بجا مانده از ورکرهای حذف‌شده."))),
+      el("div", { class: "row", style: "gap:8px;flex-wrap:wrap" },
+        el("span", { class: "badge c" }, `${items.length} کل برچسب‌ها`),
+        el("span", { class: "badge v" }, `${items.length - missing - unchecked} موجود`),
+        missing ? el("span", { class: "badge r" }, `${missing} حذف‌شده`) : null,
+        unchecked ? el("span", { class: "badge y" }, `${unchecked} بررسی‌نشده`) : null,
+        refreshBtn, pruneBtn)));
+
+    const card = el("div", { class: "stg-card" });
+
+    const q = el("input", { type: "search", placeholder: "جستجو بر اساس نام ورکر یا نام اکانت...", style: "max-width:290px;margin:0" });
+    q.value = taggedFilter.q;
+    const onlyMissing = el("input", { type: "checkbox" });
+    onlyMissing.checked = taggedFilter.missingOnly;
 
     const tbody = el("tbody");
     function renderRows() {
@@ -6903,20 +7608,53 @@ function clientApp() {
 
   async function viewKv(v) {
     if (!ensureProfile()) return;
-    v.append(spinner("در حال دریافت KVها..."));
+    v.append(spinner("در حال دریافت فضاهای نام Workers KV..."));
     try {
       const d = await api(`/api/kv?profile=${encodeURIComponent(S.profile)}`);
       v.innerHTML = "";
-      const card = el("div", { class: "card" }, el("h3", null, ic("box"), " مخزن‌های KV"));
-      if (!d.namespaces.length) { card.append(el("div", { class: "empty" }, "مخزنی وجود ندارد.")); v.append(card); return; }
-      const kvRows = d.namespaces.map(k => el("tr", { onclick: () => kvDetail(k) },
-        el("td", null, k.title || "?"), el("td", { class: "mono" }, k.id)));
+      v.append(el("div", { class: "stg-hero" },
+        el("div", { class: "stg-hero-main" },
+          el("div", { class: "stg-hero-ico" }, ic("box", 24)),
+          el("div", null,
+            el("div", { class: "stg-hero-title" }, `مخزن‌های کلید-مقدار Workers KV (${S.profile})`),
+            el("div", { class: "stg-hero-sub" }, "مشاهده فضاهای ذخیره‌سازی KV، مرور کلیدها، افزودن یا ویرایش مقادیر و ساخت مخزن KV جدید."))),
+        el("div", { class: "row", style: "gap:8px" },
+          el("button", { class: "btn primary sm", onclick: () => kvCreateModal() }, ic("plus", 14), " ساخت مخزن KV جدید"),
+          el("button", { class: "btn sm", onclick: () => go("kv") }, ic("refresh", 14), " تازه‌سازی"))));
+      const card = el("div", { class: "stg-card" });
+      if (!d.namespaces.length) {
+        card.append(el("div", { class: "empty" },
+          ic("box", 26),
+          el("div", { style: "font-weight:800;color:var(--text);margin:6px 0 4px" }, "هیچ مخزن KV در این اکانت وجود ندارد"),
+          el("div", { class: "small dim" }, "برای ساخت مخزن KV جدید از دکمه بالا استفاده کنید.")));
+        v.append(card);
+        return;
+      }
+      const kvRows = d.namespaces.map(k => el("tr", { style: "cursor:pointer", onclick: () => kvDetail(k) },
+        el("td", { class: "bold mono" }, k.title || "?"), el("td", { class: "mono" }, k.id)));
       const kvTable = el("table", null,
-        el("thead", null, el("tr", null, el("th", null, "عنوان"), el("th", null, "ID"))),
+        el("thead", null, el("tr", null, el("th", null, "عنوان فضای نام (Namespace)"), el("th", null, "شناسه یکتا (Namespace ID)"))),
         el("tbody", null, kvRows));
       card.append(el("div", { class: "tbl-wrap" }, kvTable));
+      card.append(el("div", { class: "stg-note" },
+        ic("info", 16),
+        el("div", null, "با کلیک روی هر مخزن KV می‌توانید لیست کلیدها را مشاهده کرده و مقادیر جدید اضافه یا ویرایش کنید.")));
       v.append(card);
     } catch (e) { v.innerHTML = ""; v.append(el("div", { class: "card" }, el("div", { class: "empty" }, errLine(e)))); }
+  }
+
+  function kvCreateModal() {
+    const inp = el("input", { placeholder: "عنوان مخزن KV", direction: "ltr" });
+    modal([ic("plus", 18), " ساخت KV جدید"], el("label", { class: "fld" }, "عنوان", inp), [
+      el("button", {
+        class: "btn primary sm", onclick: async () => {
+          try {
+            await api(`/api/kv?profile=${encodeURIComponent(S.profile)}`, { method: "POST", body: { title: inp.value.trim() } });
+            toast("مخزن KV ساخته شد ✓", "ok"); closeModal(); go("kv");
+          } catch (e) { toast(e.message, "err"); }
+        }
+      }, "ساخت"),
+    ]);
   }
 
   async function kvDetail(kv) {
@@ -7018,23 +7756,39 @@ function clientApp() {
 
   async function viewD1(v) {
     if (!ensureProfile()) return;
-    v.append(spinner("در حال دریافت دیتابیس‌ها..."));
+    v.append(spinner("در حال دریافت دیتابیس‌های D1..."));
     try {
       const d = await api(`/api/d1?profile=${encodeURIComponent(S.profile)}`);
       v.innerHTML = "";
-      const card = el("div", { class: "card" },
-        el("div", { class: "spread" }, el("h3", null, ic("database"), " دیتابیس‌های D1"),
-          el("button", { class: "btn primary sm", onclick: () => d1CreateModal() }, ic("plus", 14), " ساخت D1 جدید")));
-      if (!d.databases.length) { card.append(el("div", { class: "empty" }, "دیتابیسی وجود ندارد.")); v.append(card); return; }
-      const d1Rows = d.databases.map(db => el("tr", { onclick: () => d1Detail(db) },
-        el("td", null, db.name || "?"),
+      v.append(el("div", { class: "stg-hero" },
+        el("div", { class: "stg-hero-main" },
+          el("div", { class: "stg-hero-ico" }, ic("database", 24)),
+          el("div", null,
+            el("div", { class: "stg-hero-title" }, `دیتابیس‌های رابطه‌ای Cloudflare D1 (${S.profile})`),
+            el("div", { class: "stg-hero-sub" }, "مدیریت دیتابیس‌های SQLite کلادفلر، بررسی جدول‌ها، اجرای مستقیم کوئری SQL و ساخت دیتابیس جدید."))),
+        el("div", { class: "row", style: "gap:8px" },
+          el("button", { class: "btn primary sm", onclick: () => d1CreateModal() }, ic("plus", 14), " ساخت دیتابیس D1 جدید"),
+          el("button", { class: "btn sm", onclick: () => go("d1") }, ic("refresh", 14), " تازه‌سازی"))));
+      const card = el("div", { class: "stg-card" });
+      if (!d.databases.length) {
+        card.append(el("div", { class: "empty" },
+          ic("database", 26),
+          el("div", { style: "font-weight:800;color:var(--text);margin:6px 0 4px" }, "هیچ دیتابیس D1 در این اکانت وجود ندارد"),
+          el("div", { class: "small dim" }, "برای ساخت دیتابیس جدید از دکمه بالا استفاده کنید.")));
+        v.append(card);
+        return;
+      }
+      const d1Rows = d.databases.map(db => el("tr", { style: "cursor:pointer", onclick: () => d1Detail(db) },
+        el("td", { class: "bold mono" }, db.name || "?"),
         el("td", { class: "mono" }, (db.uuid || "?")),
-        el("td", { class: "mono" }, (db.created_at || "").slice(0, 10))));
+        el("td", { class: "mono small" }, (db.created_at || "").slice(0, 10))));
       const d1Table = el("table", null,
-        el("thead", null, el("tr", null, el("th", null, "نام"), el("th", null, "UUID"), el("th", null, "ساخته‌شده"))),
+        el("thead", null, el("tr", null, el("th", null, "نام دیتابیس"), el("th", null, "شناسه یکتا (UUID)"), el("th", null, "تاریخ ایجاد"))),
         el("tbody", null, d1Rows));
       card.append(el("div", { class: "tbl-wrap" }, d1Table));
-      card.append(el("div", { class: "auth-hint" }, "توجه: D1 از API تغییر نام (rename) واقعی پشتیبانی نمی‌کند؛ گزینه «تغییر نام» در جزئیات، یک دیتابیس خالی جدید می‌سازد."));
+      card.append(el("div", { class: "stg-note" },
+        ic("info", 16),
+        el("div", null, "با کلیک روی هر دیتابیس می‌توانید لیست جدول‌ها، حجم مصرفی و کنسول اجرای کوئری SQL را مشاهده کنید.")));
       v.append(card);
     } catch (e) { v.innerHTML = ""; v.append(el("div", { class: "card" }, el("div", { class: "empty" }, errLine(e)))); }
   }
@@ -7142,10 +7896,7 @@ function clientApp() {
 
   async function viewCreators(v) {
     if (!ensureProfile()) return;
-    const tabs = el("div", { class: "tabs" }, CREATOR_TABS.map(([k, l, ii]) =>
-      el("button", { class: "tab" + (creatorTab === k ? " active" : ""), onclick: () => { creatorTab = k; go("creators"); } }, ic(ii, 14), l)));
-    v.append(tabs);
-    const form = el("div", { class: "card" });
+    const form = el("div", { class: "stg-card" });
     v.append(form);
     const out = el("div");
     v.append(out);
@@ -7153,40 +7904,47 @@ function clientApp() {
     const fld = (label, input) => el("label", { class: "fld" }, label, input);
     const inp = (val, ph) => { const i = el("input", { direction: "ltr", placeholder: ph || "" }); if (val) i.value = val; return i; };
 
-      form.append(el("h3", null, ic("zap"), " سازنده پنل Nexa"),
-        el("div", { class: "auth-hint" }, "کد Nexa به‌صورت خودکار از منبع سراسری (nexa-panel) دریافت می‌شود؛ D1 + CF_API_TOKEN."));
-      const cron = inp("30 20 * * *");
-      const deployType = el("select", null,
-        el("option", { value: "worker" }, "Worker (ورکر)"),
-        el("option", { value: "pages" }, "Pages (پیجز)"));
-      const cronRow = fld("عبارت Cron", cron);
-      cronRow.style.display = "none";
-      deployType.onchange = () => {
-        if (deployType.value === "pages") {
-          cronRow.style.opacity = "0.4";
-          cronRow.style.pointerEvents = "none";
-          cron.title = "Pages از Cron پشتیبانی نمی‌کند";
-        } else {
-          cronRow.style.opacity = "1";
-          cronRow.style.pointerEvents = "";
-          cron.title = "";
+    form.append(
+      el("div", { class: "stg-head" },
+        el("div", { class: "stg-ico" }, ic("zap", 20)),
+        el("div", { class: "stg-head-txt" },
+          el("div", { class: "stg-head-title" }, "پیکربندی استقرار پنل جدید"))));
+
+    const cron = inp("30 20 * * *");
+    const deployType = el("select", null,
+      el("option", { value: "worker" }, "ورکر"),
+      el("option", { value: "pages" }, "پیجس"));
+    const cronRow = fld("عبارت Cron", cron);
+    cronRow.style.display = "none";
+    deployType.onchange = () => {
+      if (deployType.value === "pages") {
+        cronRow.style.opacity = "0.4";
+        cronRow.style.pointerEvents = "none";
+        cron.title = "Pages از Cron پشتیبانی نمی‌کند";
+      } else {
+        cronRow.style.opacity = "1";
+        cronRow.style.pointerEvents = "";
+        cron.title = "";
+      }
+    };
+    form.append(el("div", { class: "grid c2" },
+      fld("بستر استقرار پنل", deployType),
+      el("div", { class: "stg-note", style: "align-self:end" },
+        ic("info", 16),
+        el("div", null, "پس از اتمام ساخت، پنل جدید به‌طور خودکار برچسب «nexa» می‌خورد و در بخش‌های عملیات گروهی و پایش سلامت قرار می‌گیرد."))));
+    form.append(cronRow);
+    form.append(el("div", { class: "btn-row" },
+      el("button", {
+        class: "btn primary", onclick: async (e) => {
+          e.target.disabled = true;
+          try {
+            const isPages = deployType.value === "pages";
+            const d = await api(`/api/create/${creatorTab}?profile=${P()}`, { method: "POST", body: { cron: isPages ? undefined : cron.value, deploy_type: deployType.value } });
+            showResult(out, `پنل Nexa ${isPages ? "(Pages)" : "(Worker)"} با موفقیت مستقر شد!`, d);
+          } catch (ex) { toast(ex.message, "err", 7000); }
+          e.target.disabled = false;
         }
-      };
-      form.append(el("div", { class: "auth-hint" }, "نام Worker یا Pages و نام D1 به‌صورت تصادفی ساخته می‌شوند."));
-      form.append(el("div", { class: "grid c2" }, fld("محل استقرار", deployType), el("div", { class: "dim small", style: "align-self:end;padding-bottom:4px" }, "Worker: ورکر کلاسیک با Cron — Pages: بدون Cron")));
-      form.append(cronRow);
-      form.append(el("div", { class: "btn-row" },
-        el("button", {
-          class: "btn primary", onclick: async (e) => {
-            e.target.disabled = true;
-            try {
-              const isPages = deployType.value === "pages";
-              const d = await api(`/api/create/${creatorTab}?profile=${P()}`, { method: "POST", body: { cron: isPages ? undefined : cron.value, deploy_type: deployType.value } });
-              showResult(out, `پنل Nexa ${isPages ? "(Pages)" : "(Worker)"} مستقر شد!`, d);
-            } catch (ex) { toast(ex.message, "err", 7000); }
-            e.target.disabled = false;
-          }
-        }, ic("rocket", 14), " شروع ساخت")));
+      }, ic("rocket", 15), " شروع ساخت و استقرار خودکار")));
   }
 
   function showResult(out, title, d) {
@@ -7216,16 +7974,24 @@ function clientApp() {
 
   let bulkType = "nexa";
   async function viewBulk(v) {
-    const tabs = el("div", { class: "tabs" },
-      el("button", { class: "tab" + (bulkType === "nexa" ? " active" : ""), onclick: () => { bulkType = "nexa"; go("bulk"); } }, ic("zap", 14), " پنل Nexas"));
-    v.append(tabs);
-    const card = el("div", { class: "card" }, spinner("در حال دریافت تارگت‌ها..."));
+    v.append(el("div", { class: "stg-hero" },
+      el("div", { class: "stg-hero-main" },
+        el("div", { class: "stg-hero-ico" }, ic("refresh", 24)),
+        el("div", null,
+          el("div", { class: "stg-hero-title" }, "عملیات بروزرسانی و بازسازی گروهی پنل‌ها (همه اکانت‌ها)"),
+          el("div", { class: "stg-hero-sub" }, "آپدیت همزمان سورس کد با حفظ بایندینگ‌ها یا اجرای ریبیلد کامل برای دور زدن محدودیت‌ها و خطای 1101 در تمام اکانت‌های متصل."))),
+      el("button", { class: "btn sm", onclick: () => go("bulk") }, ic("refresh", 14), " تازه‌سازی لیست")));
+    const card = el("div", { class: "stg-card" }, spinner("در حال دریافت لیست پنل‌های برچسب‌دار..."));
     const log = el("div", { class: "log", style: "display:none" });
     v.append(card, log);
     try {
       const d = await api(`/api/bulk/targets?type=${bulkType}`);
       card.innerHTML = "";
-      card.append(el("h3", null, ic("refresh"), ` عملیات گروهی Nexa (همه اکانت‌ها)`));
+      card.append(el("div", { class: "stg-head", style: "padding-bottom:10px;border-bottom:none" },
+        el("div", { class: "stg-ico" }, ic("layers", 20)),
+        el("div", { class: "stg-head-txt" },
+          el("div", { class: "stg-head-title" }, "انتخاب پنل‌های هدف برای عملیات گروهی"),
+          el("div", { class: "stg-head-desc" }, "موارد موردنظر از بین ورکرها و پروژه‌های Pages در تمام اکانت‌ها را تیک بزنید و سپس نوع عملیات را انتخاب کنید."))));
       if (!d.targets.length) {
         card.append(el("div", { class: "empty" }, `هیچ ورکر یا پروژهٔ Pages به‌عنوان پنل ${bulkType} علامت نخورده است.`,
           el("div", { class: "small dim", style: "margin-top:6px" }, "از بخش Workers یا Pages، هدف موردنظر را برچسب‌گذاری کنید.")));
@@ -7396,7 +8162,7 @@ function clientApp() {
   };
 
   async function viewHealth(v) {
-    const sum = el("div", { class: "card" }, spinner("در حال دریافت وضعیت پایش..."));
+    const sum = el("div", { class: "stg-card" }, spinner("در حال دریافت وضعیت پایش..."));
     v.append(sum);
     const load = async () => {
       try {
@@ -7407,7 +8173,10 @@ function clientApp() {
           api("/api/health/config"),
         ]);
         sum.innerHTML = "";
-        sum.append(el("h3", null, ic("pulse"), " پایش خودکار پنل‌ها"));
+        sum.append(el("div", { class: "stg-head", style: "padding-bottom:10px" },
+          el("div", { class: "stg-ico" }, ic("pulse", 20)),
+          el("div", { class: "stg-head-txt" },
+            el("div", { class: "stg-head-title" }, "وضعیت پایش خودکار و آمار کلی"))));
         const counts = {};
         for (const c of s.counts || []) counts[c.status] = c.n;
         const lastErr = (h.history || []).find(r => r.status === "error_1101" || r.status === "rebuild_failed");
@@ -7461,8 +8230,6 @@ function clientApp() {
               el("span", { class: "badge c" }, "آخرین رفع"),
               ` «${lastFix.worker}» — ریبیلد در ${faTime(lastFix.fixed_at)}`) : null));
         }
-        sum.append(el("div", { class: "auth-hint" },
-          "زمان‌بندی خودکار: طبق کرون‌ترگر ورکر (مثلاً هر ۱۵ دقیقه). اگر پنلی خطای 1101 بدهد، همان‌جا با کد nexa ریبیلد می‌شود: همان نام، همه بایندینگ‌ها و کرون قبلی برمی‌گردند و متغیرها plain_text ساخته می‌شوند."));
 
         const cfgMap = {};
         for (const c of (cfg.configs || [])) cfgMap[c.profile + "||" + c.worker] = c.path;
@@ -7555,19 +8322,25 @@ function clientApp() {
   }
 
   async function backupModal() {
-    const box = el("div", null, spinner("در حال ساخت بکاپ..."));
-    modal([ic("save", 18), " بکاپ کامل"], box, [], "wide");
+    const box = el("div", null, spinner("در حال جمع‌آوری اطلاعات و ساخت نسخه پشتیبان..."));
+    modal([ic("save", 18), " پیش‌نمایش و دریافت نسخه پشتیبان"], box, [], "wide");
     try {
       const d = await api("/api/backup");
       const txt = JSON.stringify(d, null, 2);
+      const scriptCount = Array.isArray(d.scripts) ? d.scripts.length : 0;
       box.innerHTML = "";
       box.append(
-        el("div", { class: "spread", style: "margin-bottom:10px" },
-          el("span", { class: "small dim" }, `${d.profiles.length} پروفایل — ${Object.keys(d.settings).length} تنظیم`),
-          el("div", { class: "row" },
-            el("button", { class: "btn sm", onclick: () => copyText(txt) }, ic("copy", 13), " کپی JSON"),
-            el("a", { class: "btn ok sm", href: "/api/backup?download=1", download: "" }, ic("download", 13), " دانلود فایل"))),
-        el("pre", { class: "out", style: "max-height:360px" }, txt.length > 8000 ? txt.slice(0, 8000) + "\n… (ادامه در فایل دانلودی)" : txt));
+        el("div", { class: "stg-info-box", style: "margin-bottom:12px" },
+          el("div", { class: "spread" },
+            el("div", { class: "row", style: "gap:8px" },
+              el("span", { class: "d1-pill ok" }, `${d.profiles.length} اکانت کلادفلر`),
+              el("span", { class: "d1-pill" }, `${scriptCount} اسکریپت`),
+              el("span", { class: "d1-pill" }, `${Object.keys(d.settings || {}).length} تنظیم پنل`)),
+            el("div", { class: "row", style: "gap:8px" },
+              el("button", { class: "btn sm", onclick: () => copyText(txt) }, ic("copy", 13), " کپی متن JSON"),
+              el("a", { class: "btn primary sm", href: "/api/backup?download=1", download: "" }, ic("download", 13), " دانلود فایل بکاپ"))),
+          el("div", { class: "xs dim" }, "توجه: فایل پشتیبان حاوی توکن‌های API حساب‌های شماست؛ آن را در مکان امن ذخیره کنید.")),
+        el("pre", { class: "out", style: "max-height:360px;margin-top:0" }, txt.length > 8000 ? txt.slice(0, 8000) + "\n… (ادامه محتوا در فایل دانلودی)" : txt));
     } catch (e) {
       box.innerHTML = "";
       box.append(el("div", { class: "empty" }, errLine(e)));
@@ -7575,103 +8348,272 @@ function clientApp() {
   }
 
   function restoreModal() {
-    const ta = el("textarea", { class: "code", style: "width:100%;min-height:170px", placeholder: "محتوای فایل بکاپ (JSON) را اینجا بچسبانید..." });
+    const ta = el("textarea", { class: "code", style: "width:100%;min-height:170px", placeholder: "محتوای فایل پشتیبان (JSON) را اینجا قرار دهید یا فایل را از بالا انتخاب کنید..." });
     const file = el("input", { type: "file", accept: ".json,application/json" });
     file.addEventListener("change", () => {
       const f = file.files && file.files[0];
       if (!f) return;
       const r = new FileReader();
-      r.onload = () => { ta.value = r.result; toast("فایل خوانده شد — دکمه بازیابی را بزن", "ok"); };
+      r.onload = () => { ta.value = r.result; toast("فایل بکاپ بارگذاری شد — روی «شروع بازیابی» کلیک کنید", "ok"); };
       r.readAsText(f);
     });
-    modal([ic("upload", 18), " بازیابی بکاپ"], el("div", null,
-      el("div", { class: "badge y" }, "بکاپ شامل حساب‌ها و تنظیمات است."),
-      el("label", { class: "fld", style: "margin-top:12px" }, "یا فایل بکاپ را انتخاب کنید", file),
-      el("label", { class: "fld" }, "محتوای بکاپ", ta),
-      el("div", { class: "btn-row" },
+    modal([ic("upload", 18), " بازیابی اطلاعات از نسخه پشتیبان"], el("div", null,
+      el("div", { class: "stg-info-box" },
+        "با بازیابی نسخه پشتیبان، فهرست اکانت‌های کلادفلر، اسکریپت‌های ذخیره‌شده، آدرس‌ها و تنظیمات پایش سلامت از فایل بکاپ جایگزین می‌شوند. (رمز ورود پنل تغییر نمی‌کند)."),
+      el("label", { class: "fld", style: "margin-top:12px" }, "۱. انتخاب فایل پشتیبان (.json)", file),
+      el("label", { class: "fld" }, "۲. یا چسباندن مستقیم محتوای JSON", ta),
+      el("div", { class: "btn-row", style: "margin-top:14px" },
         el("button", {
-          class: "btn primary sm", onclick: async () => {
+          class: "btn primary", onclick: async () => {
+            if (!ta.value.trim()) return toast("لطفاً ابتدا فایل بکاپ را انتخاب کنید یا متن JSON را وارد نمایید", "warn");
             try {
               let data = JSON.parse(ta.value);
               if (data.backup) data = data.backup;
               const r = await api("/api/backup/restore", { method: "POST", body: { backup: data } });
               closeModal();
-              toast(`بازیابی شد ✓ ${r.profiles} پروفایل، ${r.settings} تنظیم`, "ok", 6000);
+              toast(`بازیابی با موفقیت انجام شد ✓ (${r.profiles} اکانت، ${r.settings} تنظیم)`, "ok", 6000);
               await refreshProfiles();
               go("accounts");
             } catch (e) { toast(e.message, "err", 6000); }
           }
-        }, ic("check", 13), " بازیابی کن"))));
+        }, ic("check", 15), " شروع بازیابی اطلاعات"),
+        el("button", { class: "btn ghost", onclick: closeModal }, "انصراف"))));
   }
 
   function resetModal() {
     const items = [
-      ["profiles", "پروفایل‌ها و توکن‌های ذخیره‌شده", true],
-      ["history", "تاریخچه‌ی پایش سلامت", true],
-      ["auth", "نشست‌های ورود (خروج اجباری از همه دستگاه‌ها)", false],
-    ].map(([k, label, def]) => {
+      ["profiles", "حساب‌ها و توکن‌های کلادفلر", "حذف تمام پروفایل‌ها و توکن‌های API ذخیره‌شده در پنل", true],
+      ["scripts", "اسکریپت‌ها و سورس‌های ذخیره‌شده", "پاک‌سازی کدهای ذخیره‌شده برای ساخت و ریبیلد پنل‌ها", false],
+      ["history", "تاریخچه و گزارش‌های پایش سلامت", "حذف لاگ‌های بررسی خودکار و خطاهای ثبت‌شده قبلی", true],
+      ["auth", "نشست‌های ورود فعال (Sessions)", "خروج اجباری از تمام مرورگرها و دستگاه‌های متصل به پنل", false],
+    ].map(([k, title, desc, def]) => {
       const cb = el("input", { type: "checkbox" });
       if (def) cb.checked = true;
-      return { k, cb, node: el("label", { class: "chk", style: "padding:6px 0;border-bottom:1px solid var(--line-soft)" }, cb, el("span", { class: "small" }, label)) };
+      return {
+        k, cb,
+        node: el("label", { class: "rst-item" },
+          cb,
+          el("div", { style: "min-width:0" },
+            el("div", { class: "rst-item-title" }, title),
+            el("div", { class: "rst-item-desc" }, desc))),
+      };
     });
-    modal([ic("alert", 18), " بازنشانی تنظیمات"], el("div", null,
-      el("p", { class: "small dim" }, "موارد انتخاب‌شده به‌طور کامل از دیتابیس D1 حذف می‌شوند. این عمل قابل بازگشت نیست — اگر لازم است اول بکاپ بگیرید."),
-      el("div", { style: "margin:8px 0" }, items.map(i => i.node)),
+    modal([ic("alert", 18), " بازنشانی و پاک‌سازی داده‌های پنل"], el("div", null,
+      el("p", { class: "small dim" }, "بخش‌هایی که قصد پاک‌سازی آن‌ها از دیتابیس D1 را دارید انتخاب کنید. این عملیات غیرقابل بازگشت است؛ توصیه می‌شود پیش از ادامه یک نسخه بکاپ دانلود کنید."),
+      el("div", { style: "display:flex;flex-direction:column;gap:8px;margin:12px 0" }, items.map(i => i.node)),
       el("div", { class: "btn-row", style: "margin-top:12px" },
-        el("button", { class: "btn sm", onclick: () => { items.forEach(i => { i.cb.checked = true; }); } }, "انتخاب همه"),
-        el("button", { class: "btn sm ghost", onclick: () => { items.forEach(i => { i.cb.checked = false; }); } }, "پاک کردن انتخاب‌ها"))), [
+        el("button", { class: "btn sm", onclick: () => { items.forEach(i => { i.cb.checked = true; }); } }, "انتخاب همه موارد"),
+        el("button", { class: "btn sm ghost", onclick: () => { items.forEach(i => { i.cb.checked = false; }); } }, "لغو انتخاب‌ها"))), [
       el("button", {
         class: "btn danger", onclick: () => {
           const body = {};
           items.forEach(i => { if (i.cb.checked) body[i.k] = true; });
-          if (!Object.keys(body).length) return toast("چیزی انتخاب نشده", "warn");
-          confirmBox("مطمئنی؟ داده‌های انتخاب‌شده برای همیشه حذف می‌شوند!", async () => {
+          if (!Object.keys(body).length) return toast("هیچ موردی برای حذف انتخاب نشده است", "warn");
+          confirmBox("آیا از حذف دائمی بخش‌های انتخاب‌شده اطمینان دارید؟ این عمل قابل بازگشت نیست.", async () => {
             try {
               await api("/api/reset", { method: "POST", body });
               closeModal();
-              if (body.auth) { toast("همه‌چیز بازنشانی شد — صفحه راه‌اندازی", "ok"); setTimeout(() => location.reload(), 900); }
-              else { toast("بازنشانی انجام شد ✓", "ok"); await refreshProfiles(); go("dashboard"); }
+              if (body.auth) { toast("پاک‌سازی انجام شد — در حال انتقال به صفحه ورود...", "ok"); setTimeout(() => location.reload(), 900); }
+              else { toast("بخش‌های انتخاب‌شده با موفقیت پاک‌سازی شدند ✓", "ok"); await refreshProfiles(); go("dashboard"); }
             } catch (e) { toast(e.message, "err"); }
           });
         }
       }, ic("trash", 14), " حذف موارد انتخاب‌شده"),
+      el("button", { class: "btn ghost", onclick: closeModal }, "انصراف"),
     ]);
   }
 
   function viewSettings(v) {
-    const cur = el("input", { type: "password" });
-    const next = el("input", { type: "password" });
-    v.append(el("div", { class: "card" },
-      el("h3", null, ic("lock"), " تغییر رمز عبور (متغیر محیطی ADMIN)"),
-      el("div", { class: "small dim", style: "line-height:2" },
-        "رمز پنل در دیتابیس ذخیره نمی‌شود — متغیر محیطی ", el("code", { style: "color:var(--green);direction:ltr" }, "ADMIN"),
-        " (از نوع Text) روی همین ورکر است. با این فرم همان متغیر از طریق API کلادفلر به‌روزرسانی می‌شود",
-        " (اکانتی که این ورکر در آن است باید در پروفایل‌ها ذخیره شده باشد)."),
-      el("label", { class: "fld" }, "رمز فعلی", cur),
-      el("label", { class: "fld" }, "رمز جدید (حداقل ۶ کاراکتر)", next),
-      el("div", { class: "btn-row" }, el("button", {
-        class: "btn primary sm", onclick: async () => {
-          try {
-            const r = await api("/api/admin-password", { method: "POST", body: { current: cur.value, next: next.value } });
-            toast(r.message || "متغیر ADMIN به‌روزرسانی شد ✓", "ok", 7000);
-            cur.value = next.value = "";
-          } catch (e) { toast(e.message, "err", 7000); }
+    const curField = makeAuthPasswordInput("رمز عبور فعلی پنل را وارد کنید", "current-password", "lock");
+    const nextField = makeAuthPasswordInput("رمز عبور جدید (حداقل ۶ کاراکتر)", "new-password", "key");
+    const confField = makeAuthPasswordInput("تکرار رمز عبور جدید", "new-password", "key");
+
+    const bars = [0, 1, 2, 3].map(() => el("div", { class: "pw-bar" }));
+    const strengthText = el("span", null, "حداقل ۶ کاراکتر");
+    const matchHint = el("span", { class: "xs dim" }, "");
+
+    const updateStrength = () => {
+      const val = nextField.inp.value;
+      let score = 0;
+      if (val.length >= 6) score++;
+      if (val.length >= 10) score++;
+      if ((/[A-Z]/.test(val) && /[a-z]/.test(val)) || /\d/.test(val)) score++;
+      if (/[^A-Za-z0-9]/.test(val) && val.length >= 8) score++;
+      const cls = score === 1 ? "s1" : score === 2 ? "s2" : score === 3 ? "s3" : score >= 4 ? "s4" : "";
+      bars.forEach((b, idx) => { b.className = "pw-bar" + (idx < score ? " " + cls : ""); });
+      const labels = ["حداقل ۶ کاراکتر", "ضعیف", "متوسط", "خوب", "بسیار قوی ✓"];
+      strengthText.textContent = val.length === 0 ? labels[0] : (val.length < 6 ? `کوتاه (${val.length}/۶)` : labels[score]);
+      strengthText.style.color = score >= 3 ? "var(--primary)" : score === 2 ? "var(--warn)" : val.length > 0 ? "var(--danger)" : "var(--muted)";
+
+      if (!confField.inp.value) {
+        matchHint.textContent = "";
+      } else if (val === confField.inp.value) {
+        matchHint.textContent = "تطابق رمزها ✓";
+        matchHint.style.color = "var(--primary)";
+      } else {
+        matchHint.textContent = "عدم تطابق با رمز جدید";
+        matchHint.style.color = "var(--danger)";
+      }
+    };
+    nextField.inp.addEventListener("input", updateStrength);
+    confField.inp.addEventListener("input", updateStrength);
+
+    const savePwBtn = el("button", {
+      class: "btn primary",
+      style: "width:100%",
+      onclick: async () => {
+        if (!curField.inp.value) {
+          toast("لطفاً رمز عبور فعلی را وارد کنید", "warn");
+          curField.inp.focus();
+          return;
         }
-      }, ic("save", 14), " تغییر رمز"))));
-    v.append(el("div", { class: "card" },
-      el("h3", null, ic("save"), " بکاپ و بازیابی"),
-      el("div", { class: "small dim", style: "line-height:2" },
-        "بکاپ شامل پروفایل‌ها (به‌همراه توکن‌های API) و تنظیمات است.",
-        el("br"), "فایل بکاپ را جای امن نگه دارید — داخل آن توکن‌ها به‌صورت خام هستند."),
-      el("div", { class: "btn-row" },
-        el("button", { class: "btn primary sm", onclick: backupModal }, ic("save", 14), " ساخت بکاپ"),
-        el("a", { class: "btn ok sm", href: "/api/backup?download=1", download: "", title: "دانلود فایل بکاپ JSON" }, ic("download", 14), " دانلود بکاپ"),
-        el("button", { class: "btn sm", onclick: restoreModal }, ic("upload", 14), " بازیابی بکاپ"))));
-    v.append(el("div", { class: "card" },
-      el("h3", null, ic("alert"), " بازنشانی تنظیمات"),
-      el("div", { class: "small dim" }, "موارد انتخاب‌شده برای همیشه از D1 حذف می‌شوند — قبل از ادامه حتماً بکاپ بگیرید."),
-      el("div", { class: "btn-row" },
-        el("button", { class: "btn danger sm", onclick: resetModal }, ic("trash", 14), " بازنشانی..."))));
+        if (nextField.inp.value.length < 6) {
+          toast("رمز عبور جدید باید حداقل ۶ کاراکتر باشد", "warn");
+          nextField.inp.focus();
+          return;
+        }
+        if (confField.inp.value && nextField.inp.value !== confField.inp.value) {
+          toast("رمز عبور جدید و تکرار آن یکسان نیستند", "err");
+          confField.inp.focus();
+          return;
+        }
+        savePwBtn.disabled = true;
+        savePwBtn.replaceChildren(el("span", { class: "spin" }), " در حال ثبت و همگام‌سازی...");
+        try {
+          const r = await api("/api/admin-password", {
+            method: "POST",
+            body: { current: curField.inp.value, next: nextField.inp.value },
+          });
+          toast(r.message || "رمز عبور ADMIN با موفقیت به‌روزرسانی شد ✓", "ok", 7000);
+          curField.inp.value = "";
+          nextField.inp.value = "";
+          confField.inp.value = "";
+          updateStrength();
+        } catch (e) {
+          toast(e.message, "err", 7000);
+        } finally {
+          savePwBtn.disabled = false;
+          savePwBtn.replaceChildren(ic("save", 15), " ذخیره و بروزرسانی رمز عبور");
+        }
+      },
+    }, ic("save", 15), " ذخیره و بروزرسانی رمز عبور");
+
+    const accCount = Array.isArray(S.profiles) ? S.profiles.length : 0;
+
+    // 1. Hero Header
+    v.append(el("div", { class: "stg-hero" },
+      el("div", { class: "stg-hero-main" },
+        el("div", { class: "stg-hero-ico" }, ic("shield", 24)),
+        el("div", null,
+          el("div", { class: "stg-hero-title" }, "مرکز تنظیمات امنیتی و مدیریت داده‌ها"),
+          el("div", { class: "stg-hero-sub" }, "مدیریت رمز ورود پنل (ADMIN)، تهیه نسخه پشتیبان کامل برای انتقال یا بازیابی، و کنترل نشست‌ها و دیتابیس D1"))),
+      el("div", { class: "stg-pills" },
+        el("span", { class: "d1-pill ok" }, el("span", { class: "dot pulse" }), "دیتابیس D1 فعال"),
+        el("span", { class: "d1-pill ok" }, el("span", { class: "dot pulse" }), "متغیر ADMIN تنظیم‌شده"),
+        el("span", { class: "d1-pill" }, ic("user", 12), ` ${accCount} اکانت متصل`))));
+
+    // 2. Two-Column Main Grid (Password & Backup)
+    const pwCard = el("div", { class: "stg-card" },
+      el("div", { class: "stg-card-top" },
+        el("div", { class: "stg-head" },
+          el("div", { class: "stg-ico" }, ic("lock", 20)),
+          el("div", { class: "stg-head-txt" },
+            el("div", { class: "stg-head-title" },
+              "تغییر رمز عبور پنل",
+              el("code", { style: "color:var(--primary);font-size:11.5px" }, "ADMIN")),
+            el("div", { class: "stg-head-desc" },
+              "رمز ورود پنل در متغیر ", el("code", { style: "direction:ltr" }, "ADMIN"),
+              " ذخیره شده و در صورت وجود اکانت کلادفلر این ورکر در لیست حساب‌ها، به‌صورت خودکار در متغیرهای محیطی کلادفلر نیز آپدیت می‌شود."))),
+        el("div", { class: "fld" },
+          el("div", { class: "auth-field-lbl" },
+            el("span", null, "رمز عبور فعلی"),
+            el("span", { class: "xs dim" }, "الزامی")),
+          curField.wrap),
+        el("div", { class: "fld" },
+          el("div", { class: "auth-field-lbl" },
+            el("span", null, "رمز عبور جدید"),
+            el("span", { class: "xs dim" }, "حداقل ۶ کاراکتر")),
+          nextField.wrap,
+          el("div", { class: "pw-meter" },
+            el("div", { class: "pw-bars" }, ...bars),
+            el("div", { class: "pw-meter-lbl" }, el("span", null, "قدرت رمز جدید:"), strengthText))),
+        el("div", { class: "fld" },
+          el("div", { class: "auth-field-lbl" },
+            el("span", null, "تکرار رمز عبور جدید"),
+            matchHint),
+          confField.wrap)),
+      el("div", { style: "margin-top:4px" }, savePwBtn));
+
+    const backupCard = el("div", { class: "stg-card" },
+      el("div", { class: "stg-card-top" },
+        el("div", { class: "stg-head" },
+          el("div", { class: "stg-ico" }, ic("database", 20)),
+          el("div", { class: "stg-head-txt" },
+            el("div", { class: "stg-head-title" },
+              "پشتیبان‌گیری و بازیابی اطلاعات",
+              el("span", { class: "badge g" }, "JSON")),
+            el("div", { class: "stg-head-desc" },
+              "یک نسخه پشتیبان کامل از اطلاعات پنل تهیه کنید تا در زمان انتقال به ورکر جدید یا نیاز به بازگردانی، تمام حساب‌ها و تنظیمات شما با یک کلیک بازیابی شوند."))),
+        el("div", { class: "stg-info-box" },
+          el("div", { style: "font-weight:700;color:var(--text);margin-bottom:2px" }, "محتویات فایل پشتیبان:"),
+          el("div", { class: "stg-check-item" }, ic("check", 15),
+            el("span", null, el("b", null, "اکانت‌ها و توکن‌های API: "), "تمام پروفایل‌های کلادفلر، ترتیب نمایش و برچسب‌های ورکرها")),
+          el("div", { class: "stg-check-item" }, ic("check", 15),
+            el("span", null, el("b", null, "اسکریپت‌ها و سورس‌های بازسازی: "), "فایل‌ها و لینک‌های ذخیره‌شده برای ساخت و ریبیلد خودکار Workers و Pages")),
+          el("div", { class: "stg-check-item" }, ic("check", 15),
+            el("span", null, el("b", null, "پیکربندی پایش سلامت: "), "تنظیمات ریبیلد خودکار، مسیرهای بررسی اختصاصی و کش لینک‌ها")),
+          el("div", { class: "stg-check-item", style: "margin-top:2px" }, ic("shield", 15),
+            el("span", { class: "dim" }, el("b", { style: "color:var(--warn)" }, "نکته امنیتی: "), "فایل بکاپ حاوی توکن‌های دسترسی کلادفلر به‌صورت خام است؛ آن را در مکان امن نگه دارید (رمز ورود پنل در بکاپ ذخیره نمی‌شود).")))),
+      el("div", { class: "stg-actions-grid" },
+        el("a", {
+          class: "stg-tile primary-tile",
+          href: "/api/backup?download=1",
+          download: "",
+          title: "دانلود مستقیم فایل بکاپ JSON",
+        }, ic("download", 20), el("span", null, "دانلود مستقیم بکاپ"), el("span", { class: "stg-tile-sub" }, "دریافت فایل JSON")),
+        el("button", {
+          type: "button",
+          class: "stg-tile",
+          onclick: backupModal,
+        }, ic("eye", 20), el("span", null, "مشاهده و کپی"), el("span", { class: "stg-tile-sub" }, "پیش‌نمایش محتوای بکاپ")),
+        el("button", {
+          type: "button",
+          class: "stg-tile",
+          onclick: restoreModal,
+        }, ic("upload", 20), el("span", null, "بازیابی بکاپ"), el("span", { class: "stg-tile-sub" }, "بارگذاری فایل پشتیبان"))));
+
+    v.append(el("div", { class: "stg-grid" }, pwCard, backupCard));
+
+    // 3. Bottom Danger / Maintenance Card
+    v.append(el("div", { class: "stg-danger-card" },
+      el("div", { class: "stg-head", style: "padding-bottom:12px" },
+        el("div", { class: "stg-ico danger" }, ic("alert", 20)),
+        el("div", { class: "stg-head-txt" },
+          el("div", { class: "stg-head-title" }, "منطقه حساس — مدیریت نشست‌ها و پاک‌سازی دیتابیس"),
+          el("div", { class: "stg-head-desc" }, "عملیات‌های این بخش مستقیماً روی نشست‌های ورود یا داده‌های ذخیره‌شده در دیتابیس D1 اعمال می‌شوند."))),
+      el("div", { class: "stg-danger-list" },
+        el("div", { class: "stg-danger-row" },
+          el("div", { class: "stg-danger-row-info" },
+            el("div", { class: "stg-danger-row-title" }, ic("logout", 15), "پایان دادن به تمام نشست‌های فعال (خروج از همه دستگاه‌ها)"),
+            el("div", { class: "stg-danger-row-desc" }, "تمام نشست‌های ورود (Sessions) ثبت‌شده در دیتابیس حذف می‌شوند و تمام دستگاه‌های متصل برای ادامه کار باید مجدداً رمز عبور را وارد کنند.")),
+          el("button", {
+            class: "btn sm",
+            onclick: () => confirmBox("آیا می‌خواهید تمام نشست‌های فعال را ببندید؟ پس از تأیید باید دوباره با رمز عبور وارد شوید.", async () => {
+              try {
+                await api("/api/reset", { method: "POST", body: { auth: true } });
+                toast("تمام نشست‌های فعال بسته شدند — در حال انتقال به صفحه ورود...", "ok");
+                setTimeout(() => location.reload(), 900);
+              } catch (e) { toast(e.message, "err"); }
+            }, false),
+          }, ic("logout", 14), " پایان نشست‌های فعال")),
+        el("div", { class: "stg-danger-row" },
+          el("div", { class: "stg-danger-row-info" },
+            el("div", { class: "stg-danger-row-title", style: "color:var(--danger)" }, ic("trash", 15), "بازنشانی و پاک‌سازی انتخابی دیتابیس D1"),
+            el("div", { class: "stg-danger-row-desc" }, "حذف انتخابی اکانت‌های کلادفلر، اسکریپت‌ها یا تاریخچه پایش سلامت از دیتابیس D1. این عملیات غیرقابل بازگشت است؛ حتماً پیش از ادامه یک نسخه بکاپ دانلود کنید.")),
+          el("button", {
+            class: "btn danger sm",
+            onclick: resetModal,
+          }, ic("trash", 14), " بازنشانی پیشرفته داده‌ها...")))));
   }
 
   (function customSelects() {
@@ -7852,8 +8794,11 @@ const BODY_HTML = `
 <div id="auth" class="hidden">
   <div class="auth-wrap">
     <div class="auth-card">
-      <div class="auth-logo">${LOGO_IMG}<span>Nexa-Patcher</span></div>
-      <div class="auth-sub">پنل مدیریت Cloudflare — نسخه ورکر</div>
+      <div class="auth-head">
+        <div class="auth-logo-ring">${LOGO_IMG}</div>
+        <div class="auth-logo"><span>Nexa-Patcher</span></div>
+        <div class="auth-sub">پنل هوشمند مدیریت و پایش زیرساخت Cloudflare</div>
+      </div>
       <div id="auth-body"></div>
     </div>
   </div>
@@ -7872,7 +8817,7 @@ const BODY_HTML = `
         <button id="btn-menu" class="btn ghost sm" title="منو">${MENU_SVG}</button>
         <div id="crumb">داشبورد</div>
       </div>
-      <div id="profile-wrap"><label>اکانت:</label><select id="profile-select"></select><button id="btn-logout-top" class="btn ghost sm" title="خروج">${LOGOUT_SVG}</button></div>
+      <div id="profile-wrap"><label>اکانت:</label><select id="profile-select"></select></div>
     </header>
     <main id="view"></main>
   </div>
@@ -7909,7 +8854,13 @@ export default {
   },
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (url.pathname === "/" || url.pathname === "/index.html" || url.pathname === "/ui") {
+    const cleanPath = url.pathname.replace(/\/+$/, "") || "/";
+    const UI_PATHS = new Set([
+      "/", "/index.html", "/ui",
+      "/dashboard", "/accounts", "/workers", "/pages",
+      "/kv", "/d1", "/creators", "/tagged", "/bulk", "/health", "/settings",
+    ]);
+    if (UI_PATHS.has(cleanPath)) {
       return new Response(pageHTML(), { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
     }
 
