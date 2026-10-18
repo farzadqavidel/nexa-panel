@@ -62,7 +62,7 @@ const ACCOUNT_TOKEN_PERMISSIONS =
 const USER_TOKEN_PERMISSIONS =
   [...ALL_ACCOUNT_PERMISSION_KEYS, ...USER_SCOPED_PERMISSION_KEYS].map(permEntry);
 
-const TOKEN_TEMPLATE_NAME = "Nexa-Manager";
+const TOKEN_TEMPLATE_NAME = "Nexa-Patcher";
 
 function buildTokenCreateUrl(kind, tokenName) {
   const list = kind === "user" ? USER_TOKEN_PERMISSIONS : ACCOUNT_TOKEN_PERMISSIONS;
@@ -3529,16 +3529,16 @@ route("GET", "/api/backup", async (m, req, env, url) => {
   }
   const tables = Object.create(null);
   for (const name of Object.keys(PANEL_BACKUP_TABLES)) tables[name] = (await env.DB.prepare(`SELECT * FROM ${name}`).all()).results || [];
-  const backup = { app: "Nexa-Manager", version: 2, created_at: new Date().toISOString(), profiles, scripts, settings, tables };
+  const backup = { app: "Nexa-Patcher", version: 2, created_at: new Date().toISOString(), profiles, scripts, settings, tables };
   const headers = { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" };
-  if (url.searchParams.get("download") === "1") headers["Content-Disposition"] = 'attachment; filename="Nexa-Manager-backup-' + new Date().toISOString().replace(/[:T]/g, '-').slice(0,16) + '.json"';
+  if (url.searchParams.get("download") === "1") headers["Content-Disposition"] = 'attachment; filename="Nexa-Patcher-backup-' + new Date().toISOString().replace(/[:T]/g, '-').slice(0,16) + '.json"';
   return new Response(JSON.stringify(backup, null, 2), { headers });
 });
 
 route("POST", "/api/backup/restore", async (m, req, env) => {
   const body = await req.json();
   const data = body && body.backup ? body.backup : body;
-  if (!data || !['Nexa-Manager', 'cf-wizard'].includes(data.app) || !Array.isArray(data.profiles)) throw new ApiError('فایل بکاپ کل پنل معتبر نیست.', 400);
+  if (!data || !['Nexa-Patcher', 'cf-wizard'].includes(data.app) || !Array.isArray(data.profiles)) throw new ApiError('فایل بکاپ کل پنل معتبر نیست.', 400);
   if (data.version != null && ![1,2].includes(data.version)) throw new ApiError('نسخهٔ بکاپ پنل پشتیبانی نمی‌شود.', 400);
   const stmts = [env.DB.prepare('DELETE FROM profiles')];
   let pCount = 0, sCount = 0, setCount = 0;
@@ -4908,7 +4908,7 @@ function clientApp() {
 
   function tokenLinkModal() {
     const kind = el("select", null, el("option", { value: "account" }, "توکن اکانتی (Account-owned)"), el("option", { value: "user" }, "توکن شخصی (My Profile)"));
-    const name = el("input", { value: "Nexa-Manager" });
+    const name = el("input", { value: "Nexa-Patcher" });
     const linkBox = el("div", { class: "small dim", style: "margin-top:10px" }, "برای گرفتن لینک، دکمه ساخت را بزنید.");
     const mk = el("button", {
       class: "btn primary sm", onclick: async () => {
@@ -7852,7 +7852,7 @@ const BODY_HTML = `
 <div id="auth" class="hidden">
   <div class="auth-wrap">
     <div class="auth-card">
-      <div class="auth-logo">${LOGO_IMG}<span>Nexa-Manager</span></div>
+      <div class="auth-logo">${LOGO_IMG}<span>Nexa-Patcher</span></div>
       <div class="auth-sub">پنل مدیریت Cloudflare — نسخه ورکر</div>
       <div id="auth-body"></div>
     </div>
@@ -7860,7 +7860,7 @@ const BODY_HTML = `
 </div>
 <div id="main" class="hidden">
   <aside id="side">
-    <div class="brand">${LOGO_IMG}<span>Nexa-Manager</span></div>
+    <div class="brand">${LOGO_IMG}<span>Nexa-Patcher</span></div>
     <nav id="nav"></nav>
     <div class="side-foot">
       <button id="btn-logout" class="btn ghost sm">${LOGOUT_SVG} خروج</button>
@@ -7891,7 +7891,7 @@ function pageHTML() {
 <meta name="robots" content="noindex">
 <meta name="theme-color" content="#09110D">
 <link rel="icon" type="image/png" sizes="48x48" href="${FAVICON_DATA_URI}">
-<title>Nexa-Manager — مدیریت Cloudflare</title>
+<title>Nexa-Patcher — مدیریت Cloudflare</title>
 <style>${UI_CSS}</style>
 </head>
 <body>
