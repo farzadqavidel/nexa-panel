@@ -108,10 +108,6 @@
     "fa": "پیوندهای کاربردی",
     "en": "Useful links"
   },
-  "navSupport": {
-    "fa": "حمایت مالی",
-    "en": "Support"
-  },
   "navLicense": {
     "fa": "مجوز",
     "en": "License"
@@ -131,10 +127,6 @@
   "ovBtnDemo": {
     "fa": "وب‌سایت NEXA",
     "en": "NEXA website"
-  },
-  "ovBtnTelegram": {
-    "fa": "کانال تلگرام",
-    "en": "Telegram channel"
   },
   "ovStat1n": {
     "fa": "۰",
@@ -652,14 +644,6 @@
     "fa": "تنها مسیر راه‌اندازی",
     "en": "Official deployment page"
   },
-  "linkTelegram": {
-    "fa": "کانال تلگرام",
-    "en": "Telegram channel"
-  },
-  "linkYoutube": {
-    "fa": "کانال یوتیوب",
-    "en": "YouTube channel"
-  },
   "linkGithub": {
     "fa": "مخزن کد",
     "en": "Source repository"
@@ -668,37 +652,9 @@
     "fa": "نسخه‌های گیت‌هاب",
     "en": "GitHub releases"
   },
-  "supportSectionNum": {
-    "fa": "۱۳ / حمایت",
-    "en": "13 / Support"
-  },
-  "supportH2": {
-    "fa": "حمایت مالی",
-    "en": "Support development"
-  },
-  "supportP": {
-    "fa": "اگر این ابزار برایتان مفید بوده، می‌توانید با کمک مالی به ادامه‌ی توسعه‌ی ابزارهای رایگان NEXA کمک کنید.",
-    "en": "If this tool has been useful, you can support the continued development of NEXA’s free tools with a donation."
-  },
-  "thCurrency": {
-    "fa": "ارز",
-    "en": "Currency"
-  },
-  "thWallet": {
-    "fa": "آدرس کیف پول",
-    "en": "Wallet address"
-  },
-  "copyBtn": {
-    "fa": "کپی",
-    "en": "Copy"
-  },
-  "copiedBtn": {
-    "fa": "کپی شد ✓",
-    "en": "Copied ✓"
-  },
   "licenseSectionNum": {
-    "fa": "۱۴ / قانونی",
-    "en": "14 / Legal"
+    "fa": "۱۳ / قانونی",
+    "en": "13 / Legal"
   },
   "licenseH2": {
     "fa": "مجوز",
@@ -998,19 +954,6 @@
     }
   });
 
-
-  document.querySelectorAll('.copy-btn').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const text = btn.dataset.copy;
-      try{
-        await navigator.clipboard.writeText(text);
-        const original = btn.textContent;
-        btn.textContent = t('copiedBtn');
-        setTimeout(() => btn.textContent = original, 1500);
-      }catch(err){}
-    });
-  });
 
   /* ===== Init language (applies saved/default language on load) ===== */
   applyLang(currentLang);

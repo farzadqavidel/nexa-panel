@@ -844,7 +844,7 @@ async function pagesProjectExists(token, accountId, name) {
   return res.status === 200;
 }
 
-const SCRIPT_SOURCE_URL = "https://github.com/irnexa/nexa-panel/raw/refs/heads/main/_worker.js";
+const SCRIPT_SOURCE_URL = "https://github.com/farzadqavidel/nexa-panel/raw/refs/heads/main/_worker.js";
 const SCRIPT_CACHE_TTL = 5 * 60 * 1000;
 let _scriptCache = { code: null, fetchedAt: 0 };
 
@@ -5266,32 +5266,18 @@ function clientApp() {
     return el("div", { class: "auth-foot" },
       el("a", {
         class: "auth-link",
-        href: "http://www.irnexa.workers.dev/",
+        href: "https://nexa.privte.workers.dev/",
         target: "_blank",
         rel: "noopener noreferrer",
-        title: "وب‌سایت IRNEXA",
+        title: "وب‌سایت NEXA",
       }, ic("globe", 16), el("span", null, "سایت")),
       el("a", {
         class: "auth-link",
-        href: "https://github.com/irnexa",
+        href: "https://github.com/farzadqavidel",
         target: "_blank",
         rel: "noopener noreferrer",
-        title: "گیت‌هاب IRNEXA",
-      }, ic("github", 16), el("span", null, "گیت‌هاب")),
-      el("a", {
-        class: "auth-link",
-        href: "https://www.youtube.com/@irnexateam",
-        target: "_blank",
-        rel: "noopener noreferrer",
-        title: "یوتیوب IRNEXA",
-      }, ic("youtube", 16), el("span", null, "یوتیوب")),
-      el("a", {
-        class: "auth-link",
-        href: "https://t.me/irnexateam",
-        target: "_blank",
-        rel: "noopener noreferrer",
-        title: "تلگرام IRNEXA",
-      }, ic("telegram", 16), el("span", null, "تلگرام")));
+        title: "گیت‌هاب NEXA",
+      }, ic("github", 16), el("span", null, "گیت‌هاب")));
   }
 
   async function renderAuthScreen(st) {
